@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>市場儀表板</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="side-brand">
+      <div class="logo">📈</div>
+      <div class="brand-txt"><div class="tt gold-text">Stock Wallet</div><div class="st">個人投資儀表板</div></div>
+    </div>
+    <div class="collapse-row"><button class="collapse-btn" id="collapse-btn" title="收合 / 展開側邊欄">‹</button></div>
+    <div class="nav-lbl">導覽</div>
+    <div class="nav-item on" data-page="dashboard"><span class="ic">🏠</span>主畫面</div>
+    <div class="nav-item" data-page="wallet"><span class="ic">💼</span>我的錢包</div>
+    <div class="nav-item" data-page="gold"><span class="ic">🪙</span>黃金訊號</div>
+    <div class="nav-item" data-page="calendar"><span class="ic">📅</span>重大事件</div>
+    <div class="nav-lbl">其他</div>
+    <div class="nav-item" data-page="settings"><span class="ic">⚙️</span>設定</div>
+    <div class="side-foot">資料來源:Yahoo Finance<br>延遲報價,僅供研究參考</div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="pg-title">主畫面</h1>
+        <div class="desc" id="pg-desc">大盤指數即時概覽與個人觀察名單</div>
+      </div>
+      <div class="tb-actions">
+        <div class="updated" id="updated">尚未更新</div>
+        <button class="btn gold" id="refresh"><span id="ricon">⟳</span> 更新報價</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- ===== Dashboard ===== -->
+      <div class="page active" id="page-dashboard">
+        <div class="market-switch" id="market-switch" data-market="us">
+          <div class="ms-thumb"></div>
+          <button class="ms-btn on" data-market="us"><span class="ms-flag">🇺🇸</span>美股</button>
+          <button class="ms-btn" data-market="tw"><span class="ms-flag">🇹🇼</span>台股</button>
+        </div>
+        <div class="sec-h"><span class="dot"></span>大盤指數 <span class="count" id="idx-count"></span></div>
+        <div class="qgrid" id="indices"></div>
+        <div class="spacer"></div>
+        <div class="sec-h"><span class="dot"></span>我的觀察名單 <span class="count" id="wl-count"></span></div>
+        <div class="searchbar">
+          <span class="mag">🔍</span>
+          <input id="search" type="text" placeholder="輸入英文代號或股票代碼查詢 (例如 AAPL、NVDA、2330.TW、7203.T) 後加入觀察名單" autocomplete="off">
+          <div class="results" id="results"></div>
+        </div>
+        <div class="qgrid" id="watchlist"></div>
+
+        <div class="spacer"></div>
+        <div class="grid2">
+          <div class="panel">
+            <h2><span class="dot"></span>即將到來的重大事件<span class="count" id="dash-evcount"></span></h2>
+            <div id="dash-events"></div>
+          </div>
+          <div class="panel">
+            <h2><span class="dot"></span>觀察個股財報日<span class="count" id="dash-ercount"></span></h2>
+            <div id="dash-earnings"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Calendar ===== -->
+      <div class="page" id="page-calendar">
+        <div class="panel" id="ce-panel" style="padding-bottom:0">
+          <h2 class="tx-toggle" id="ce-toggle">
+            <span class="dot"></span>新增與管理自訂事件
+            <span class="arrow" id="ce-arrow">▼</span>
+          </h2>
+          <!-- 輸入列固定在框內、不隨清單捲動、也不隨收折隱藏 -->
+          <div class="wtx-form" style="grid-template-columns:1fr 0.8fr 1.5fr 1fr 1fr auto;margin:14px 0">
+            <input id="ce-date" type="date">
+            <select id="ce-type">
+              <option value="CPI">CPI</option>
+              <option value="NFP">非農</option>
+              <option value="FOMC">FOMC</option>
+              <option value="EARNING">個股財報</option>
+              <option value="OTHER">自訂 (其他)</option>
+            </select>
+            <input id="ce-title" type="text" placeholder="事件名稱 (e.g. 蘋果發表會)" autocomplete="off">
+            <input id="ce-time" type="time" placeholder="時間 (HH:MM)" value="00:00">
+            <select id="ce-impact">
+              <option value="critical">影響力：極高</option>
+              <option value="high" selected>影響力：高</option>
+              <option value="medium">影響力：中等</option>
+            </select>
+            <button class="btn gold" id="ce-add">＋ 新增</button>
+          </div>
+          <!-- 只有「已建立事件清單」可收折 / 內部捲動 -->
+          <div class="tx-body collapsed" id="ce-body">
+            <div id="ce-list" style="padding-bottom:12px"></div>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel cal-section">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h2 style="margin:0"><span class="dot"></span>重大事件日曆</h2>
+            <select id="cal-year-sel" style="background:var(--panel-brd);color:white;border:none;padding:4px 8px;border-radius:6px;outline:none">
+              <option value="2025">2025</option>
+              <option value="2026" selected>2026</option>
+              <option value="2027">2027</option>
+              <option value="2028">2028</option>
+              <option value="2029">2029</option>
+              <option value="2030">2030</option>
+            </select>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--cpi)"></i>CPI</span>
+            <span><i style="background:var(--nfp)"></i>非農</span>
+            <span><i style="background:var(--fomc)"></i>FOMC</span>
+            <span><i style="background:#38d39f"></i>財報</span>
+            <span><i style="background:var(--gold-dim)"></i>其他</span>
+            <span><i style="outline:1.5px solid var(--gold);background:transparent"></i>今日</span>
+          </div>
+          <div class="months" id="full-calendar"></div>
+        </div>
+      </div>
+
+      <!-- ===== Ticker detail ===== -->
+      <div class="page" id="page-detail">
+        <div class="detail-head">
+          <button class="back-btn" id="detail-back">← 返回</button>
+          <div><div class="dsym" id="d-sym"></div><div class="dname" id="d-name"></div></div>
+          <div class="d-aibadge" id="d-aibadge"></div>
+          <div class="dprice"><div class="p" id="d-price">—</div><div class="c" id="d-chg"></div></div>
+        </div>
+        <div class="ctrl-row"><span class="lbl">時間範圍</span><div class="seg" id="d-timeframe"></div>
+          <button class="chip" id="d-custom-toggle">自訂區間</button>
+          <div class="range-custom" id="d-range">
+            <input type="date" id="d-start" min="2000-01-01"><span style="color:var(--muted)">→</span><input type="date" id="d-end">
+            <button class="chip" data-quick="2025">2025 年</button>
+            <button class="chip" data-quick="2026">2026 年</button>
+            <button class="btn gold" id="d-apply-range" style="padding:7px 14px">套用</button>
+          </div>
+        </div>
+        <div class="ctrl-row"><span class="lbl">均線疊圖</span><div id="d-overlays" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+        <div class="chart-card">
+          <div class="ch-h"><span class="ch-t">股價走勢(固定)</span><div class="legend2" id="d-price-legend"></div></div>
+          <div id="d-price-chart"><div class="chart-msg">載入中…</div></div>
+        </div>
+        <div class="chart-card">
+          <div class="panel-pick"><span class="lbl"></span><select id="d-panel-0"></select></div>
+          <div id="d-panel-chart-0"></div>
+        </div>
+        <div class="chart-card">
+          <div class="panel-pick"><span class="lbl"></span><select id="d-panel-1"></select></div>
+          <div id="d-panel-chart-1"></div>
+        </div>
+
+        <div class="chart-card">
+          <div class="ch-h"><span class="ch-t">🤖 AI 分析建議</span></div>
+          <div class="ai-row">
+            <select id="ai-provider" class="pp-select">
+              <option value="none">None(不輸出)</option>
+              <option value="claude">Claude API</option>
+              <option value="openai">OpenAI API</option>
+              <option value="gemini">Gemini API</option>
+            </select>
+            <button class="chip" id="ai-settings-btn">⚙ API 金鑰設定</button>
+            <button class="btn gold" id="ai-run" style="padding:8px 18px">分析</button>
+            <button class="chip" id="ai-refresh" title="重新評估(會再次呼叫 API,消耗額度)">↻ 重新評估</button>
+            <span id="ai-status" style="font-size:11.5px;color:var(--muted)"></span>
+          </div>
+          <textarea class="ai-prompt" id="ai-prompt" spellcheck="false"></textarea>
+          <div class="ai-out" id="ai-out" style="display:none"></div>
+          <div class="ai-note">送出時會附上此標的最新技術面數據(均線 / KD / RSI / MACD)。金鑰僅存於本機,直接呼叫對應官方 API。本內容為模型推估,非投資建議。</div>
+        </div>
+
+        <div class="foot">最多同時呈現三張圖:股價線固定,另兩張可自由選擇技術指標　·　滑鼠移到圖上可查看對應日期與數值　·　資料來源 Yahoo Finance(延遲)</div>
+      </div>
+
+      <!-- ===== Wallet ===== -->
+      <div class="page" id="page-wallet">
+        <div class="sticky-hero">
+          <div class="sec-h" style="margin-top:0"><span class="dot"></span>資金概況</div>
+          <div class="qgrid" id="wallet-hero-grid" style="grid-template-columns:repeat(auto-fill,minmax(215px,1fr))"></div>
+        </div>
+
+        <div class="market-switch" id="wallet-ccy-switch" data-ccy="USD">
+          <div class="ms-thumb"></div>
+          <button class="ms-btn on" data-ccy="USD"><span class="ms-flag">💵</span>美金</button>
+          <button class="ms-btn" data-ccy="TWD"><span class="ms-flag">🇹🇼</span>台幣</button>
+        </div>
+
+        <div class="sec-h"><span class="dot"></span>各項數值 <span class="count" id="wallet-ccy-label"></span></div>
+        <div class="qgrid" id="wallet-summary" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))"></div>
+        <div class="spacer"></div>
+        <div class="wallet-mid">
+          <div class="panel pie-panel">
+            <h2><span class="dot"></span>持股比例</h2>
+            <div class="pie-split">
+              <div class="pie-col">
+                <div class="pie-col-h">💵 美股 <span class="pie-share" id="pie-usd-share"></span></div>
+                <div id="wallet-pie-usd"><div class="empty">尚無美股持倉</div></div>
+              </div>
+              <div class="pie-col">
+                <div class="pie-col-h">🇹🇼 台股 <span class="pie-share" id="pie-twd-share"></span></div>
+                <div id="wallet-pie-twd"><div class="empty">尚無台股持倉</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <h2><span class="dot"></span>目前持倉<span class="count" id="wallet-hcount"></span></h2>
+            <div id="wallet-holdings" class="holdings-scroll"></div>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel merged-panel" id="dep-panel">
+          <h2><span class="dot"></span>錢包資金</h2>
+          <div class="wtx-form" style="grid-template-columns:0.7fr 0.8fr 1.3fr 1.1fr 1.3fr auto">
+            <select id="dep-side"><option value="deposit">投入</option><option value="withdraw">收回</option></select>
+            <select id="dep-ccy"><option value="USD">美金 USD</option><option value="TWD">台幣 TWD</option></select>
+            <input id="dep-amt" type="number" step="any" min="0" placeholder="金額">
+            <input id="dep-date" type="date">
+            <input id="dep-note" placeholder="備註 (可選)" autocomplete="off">
+            <button class="btn gold" id="dep-add">＋ 投入</button>
+          </div>
+          <div class="ai-note">記錄每次投入/收回股市的資金,用於計算整體投資報酬率。「持有錢包價值」= 總投入 + 已實現損益 + 未實現損益。台幣資產以即時匯率折算美金計入「總計」卡片。</div>
+          <div class="merged-sub tx-toggle" id="dep-toggle">
+            <span class="sub-dot"></span>錢包資金紀錄<span class="count" id="wallet-depcount"></span>
+            <span class="arrow" id="dep-arrow">▼</span>
+          </div>
+          <div class="tx-body" id="dep-body">
+            <div id="wallet-deposits"></div>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel merged-panel" id="tx-panel">
+          <h2><span class="dot"></span>新增交易 / 持倉</h2>
+          <div class="wtx-form">
+            <div class="w-sym-wrap">
+              <input id="w-sym" placeholder="搜尋代號 (如 AAPL、2330.TW)" autocomplete="off">
+              <div class="results" id="w-results"></div>
+            </div>
+            <select id="w-side"><option value="buy">買進</option><option value="sell">賣出</option></select>
+            <input id="w-qty" type="number" step="any" min="0" placeholder="數量">
+            <input id="w-price" type="number" step="any" min="0" placeholder="成交價">
+            <input id="w-date" type="date">
+            <button class="btn gold" id="w-add">＋ 新增</button>
+          </div>
+          <div class="ai-note">代號可直接搜尋確認(美股 / 台股皆可,台股請含 .TW)。選「賣出」的紀錄會保留,用於計算已實現/未實現損益;下方「刪除」則會把該筆紀錄整筆移除。</div>
+          <div class="merged-sub tx-toggle" id="tx-toggle">
+            <span class="sub-dot"></span>交易紀錄<span class="count" id="wallet-txcount"></span>
+            <span class="arrow" id="tx-arrow">▼</span>
+          </div>
+          <div class="tx-body" id="tx-body">
+            <div id="wallet-tx"></div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="chart-card">
+          <div class="ch-h"><span class="ch-t" id="wv-title">歷史錢包總價值</span><div class="legend2" id="wv-legend"></div></div>
+          <div id="wallet-value-chart"><div class="chart-msg">尚無資料</div></div>
+        </div>
+        <div class="chart-card">
+          <div class="ch-h"><span class="ch-t" id="wpnl-title">歷史每日交易損益(按市值計)</span></div>
+          <div id="wallet-pnl-chart"><div class="chart-msg">尚無資料</div></div>
+        </div>
+        <div class="foot">損益採市值法:每日損益 = 當日市值 − 前日市值 − 當日淨投入　·　歷史價格來自 Yahoo Finance(延遲)</div>
+      </div>
+
+      <!-- ===== Settings ===== -->
+      <div class="page" id="page-settings">
+        <div class="panel">
+          <h2><span class="dot"></span>介面主題</h2>
+          <div class="wtx-form" style="grid-template-columns:200px">
+            <select id="theme-sel">
+              <option value="system">跟隨系統</option>
+              <option value="dark">Dark (深色)</option>
+              <option value="light">Light (淺色)</option>
+            </select>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
+          <h2><span class="dot"></span>API 金鑰</h2>
+          <div id="set-keys"></div>
+          <div class="ai-note">金鑰僅儲存於本機 %APPDATA%\StockWallet\ai_config.json,不會上傳。</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
+          <h2><span class="dot"></span>匯入 / 匯出</h2>
+          <div class="set-checks" id="io-checks">
+            <label><input type="checkbox" value="transactions" checked> 錢包紀錄(交易)</label>
+            <label><input type="checkbox" value="holdings" checked> 持有標的</label>
+            <label><input type="checkbox" value="watchlist" checked> 觀察名單</label>
+            <label><input type="checkbox" value="keys"> API 金鑰</label>
+          </div>
+          <div class="ai-row" style="margin-top:14px">
+            <button class="btn gold" id="export-btn">⬇ 匯出所選項目</button>
+            <button class="btn" id="import-btn">⬆ 匯入檔案(更新 App)</button>
+            <span id="io-status" style="font-size:11.5px;color:var(--muted)"></span>
+          </div>
+          <div class="ai-note">匯出會產生一個 JSON 備份檔；匯入會以檔案內容「覆寫」你所選取的項目(請慎用)。</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
+          <h2><span class="dot" style="background:#ff6b6b"></span>系統維護</h2>
+          <div style="display:flex;gap:12px;margin-top:12px">
+            <button class="btn" style="border-color:#ff6b6b;color:#ff6b6b" id="btn-clear-temp">完全清除暫存檔 (Cache)</button>
+          </div>
+          <div class="ai-note">清除包含 AI 分析快取、網路圖片暫存檔、以及介面設定(包含主題深淺色)。清除後系統將重新啟動或需要重新整理。</div>
+        </div>
+      </div>
+
+      <!-- ===== Gold Signal ===== -->
+      <div class="page" id="page-gold">
+        <div class="sec-h"><span class="dot"></span>GLL / UGL 即時報價</div>
+        <div class="qgrid" id="gold-prices" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))"></div>
+        <div class="spacer"></div>
+        <div class="grid2">
+          <div class="panel">
+            <h2><span class="dot"></span>即將到來的關鍵事件<span class="count" id="evcount"></span></h2>
+            <div id="events"></div>
+          </div>
+          <div class="panel">
+            <h2><span class="dot"></span>訊號追蹤 · 關鍵價位提醒</h2>
+            <div class="alert-form">
+              <select id="a-tk"></select>
+              <input id="a-lvl" type="number" step="0.01" placeholder="價位 (例如 44.50)">
+              <select id="a-cond"><option value="above">突破 ≥</option><option value="below">跌破 ≤</option></select>
+              <button class="btn gold add" id="a-add">＋ 新增訊號提醒</button>
+            </div>
+            <div id="alerts"></div>
+          </div>
+        </div>
+        <div class="panel cal-section">
+          <h2><span class="dot"></span>2026 全年交易日曆熱區</h2>
+          <div class="legend">
+            <span><i style="background:var(--cpi)"></i>CPI 通膨</span>
+            <span><i style="background:var(--nfp)"></i>NFP 非農就業</span>
+            <span><i style="background:var(--fomc)"></i>FOMC 利率決議</span>
+            <span><i style="outline:1.5px solid var(--gold);background:transparent"></i>今日</span>
+          </div>
+          <div class="months" id="calendar"></div>
+        </div>
+        <div class="foot">
+          報價來源:Yahoo Finance(延遲資料)　·　經濟日期以美國 BLS / Federal Reserve 官方公布為準<br>
+          UGL = ProShares Ultra Gold(+2x)　·　GLL = ProShares UltraShort Gold(−2x)　·　本工具僅供研究,非投資建議
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="tip" id="tip"></div>
+<div class="cross-tip" id="cross-tip"></div>
+
+<div class="modal-bg" id="ai-modal">
+  <div class="modal">
+    <h3>AI API 金鑰設定</h3>
+    <div class="msub">金鑰只會儲存在本機 %APPDATA%\GoldSignal\ai_config.json,不會上傳到任何伺服器;分析時由本程式直接呼叫對應官方 API。</div>
+    <label>Claude API Key (Anthropic)</label><input id="k-claude" type="password" placeholder="sk-ant-...">
+    <label>OpenAI API Key</label><input id="k-openai" type="password" placeholder="sk-...">
+    <label>Gemini API Key (Google AI Studio)</label><input id="k-gemini" type="password" placeholder="AIza...">
+    <div class="modal-actions">
+      <button class="btn" id="ai-modal-cancel">取消</button>
+      <button class="btn gold" id="ai-modal-save">儲存</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

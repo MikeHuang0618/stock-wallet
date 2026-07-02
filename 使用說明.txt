@@ -1,0 +1,62 @@
+Stock Wallet · 個人投資儀表板(可攜式工具)
+================================================
+
+【怎麼用】
+雙擊  dist\StockWallet.exe  即可開啟,免安裝。單一 exe,可放隨身碟或複製到其他
+Windows 11 電腦直接執行(系統內建 WebView2,無需額外安裝)。
+※ 舊版 GoldSignal 的設定(觀察名單 / 訊號 / 金鑰 / 錢包)會在首次啟動自動搬遷。
+
+【側邊欄】左上角「‹」可收合側邊欄(只剩圖示),再點展開;狀態會記住。
+
+【側邊欄 · 頁面】
+· 主畫面
+    - 大盤指數:那斯達克、標普 500、道瓊、羅素 2000、費城半導體、VIX
+    - 觀察名單:搜尋代號加入(英文代號 / 股票代碼,如 AAPL、2330.TW)
+    - 重大事件日曆:CPI / 非農 / FOMC + 觀察個股的下次財報日
+    - 點任一張報價卡 → 進入「標的詳細」技術面頁面
+
+· 我的錢包(持倉管理,資料存 SQLite)
+    - 上方總覽:總市值 / 總成本 / 未實現損益 / 持有檔數
+    - 持股比例圓餅圖、目前持倉清單(點列可進技術面頁)
+    - 新增交易:填代號、數量、成交價、日期
+        · 數量「正=買進、負=賣出」,賣出紀錄保留,用於計算損益(平均成本法)
+        · 每筆交易可「刪除」→ 整筆紀錄移除(不保留)
+    - 歷史錢包總價值(折線圖)、歷史每日交易損益(折線圖,按市值計)
+
+· 黃金訊號
+    - GLL / UGL 報價、2026 CPI/非農/FOMC 事件、關鍵價位訊號、全年日曆
+
+· 設定
+    - API 金鑰:Claude / OpenAI / Gemini 各自「儲存 / 刪除」
+    - 匯入 / 匯出:勾選要處理的項目(錢包紀錄 / 持有標的 / 觀察名單 / API 金鑰)
+        · 匯出 → 產生 JSON 備份檔
+        · 匯入 → 以檔案內容覆蓋所選項目(錢包紀錄為整批取代),用於更新 / 搬移 App
+
+【標的詳細頁】
+· 最多三張圖:股價線固定,另兩張自由選(成交量 / KD / RSI / MACD / OBV / 布林)
+· 時間範圍:時 / 天 / 月 / 六個月 / 年,或「自訂區間」用日期(含 2025 / 2026 快速鈕)
+· 均線:MA5 / MA10 / MA20 / MA60(MA60 請搭配較長範圍)
+· 滑鼠移到圖上有十字游標:虛線對應日期、圓點對應價格,並彈出當時點所有數值
+· AI 分析建議(選單 None / Claude / OpenAI / Gemini,預設 None 不輸出):
+    - 進入頁面時「若該供應商已設定金鑰則自動評估」;同一標的「每天只實際呼叫一次」,
+      當天已評估過會用快取(不消耗額度);要重新評估請按「↻ 重新評估」
+    - 評級與買入目標價會顯示在標題(代號)與價格中間
+    - 送出時自動附上最新技術面數據,輸出:建議(買入/觀望/賣出)+ 買入/賣出目標價
+    - 模型預設 Claude=claude-sonnet-5、OpenAI=gpt-4o、Gemini=gemini-2.5-flash
+      (若供應商改代號可改 ai_config.json 的 models,已淘汰代號會自動忽略)
+
+【設定檔存放】 %APPDATA%\StockWallet\
+    wallet.db(交易)、watchlist.json、alerts.json、events.json、ai_config.json
+
+【資料來源與免責】報價/歷史價來自 Yahoo Finance(延遲);AI 內容為模型推估。本工具僅供研究,非投資建議。
+
+【專案架構(前後端分離)】
+後端  app.py(進入點)、api.py(Api 類別)、indicators.py、analysis.py、wallet.py
+前端  web\index.html、web\styles.css、web\app.js
+測試  test_indicators.py、test_analysis.py、test_wallet.py(皆附 pytest)
+
+【重新打包】
+測試:python -m pytest -q      (需全綠才發佈)
+打包:python -m PyInstaller --noconfirm --onefile --windowed --name StockWallet ^
+        --icon icon.ico --add-data "icon.ico;." --add-data "web;web" ^
+        --collect-all webview --collect-all winotify app.py

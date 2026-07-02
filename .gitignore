@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# PyInstaller / 打包產物
+build/
+dist/
+*.spec
+installer/Output/
+icon.png
+
+# 個人暫存 / 探測腳本(不進 repo)
+scratch/
+
+# 本機執行資料(設定與 wallet.db 存在 %APPDATA%\StockWallet,不在此 repo)
+
+# Claude Code local settings (never publish)
+.claude/

@@ -1,0 +1,47 @@
+name: Release
+
+# 推一個 v* 標籤(例如 git tag v0.7.0 && git push origin v0.7.0)即自動:
+# 跑測試 → 打包 exe → 產生安裝檔(Inno Setup)→ 附到 GitHub Release。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+
+      - name: Test (release gate)
+        run: pytest
+
+      - name: Generate icon
+        run: python make_icon.py
+
+      - name: Build portable exe (PyInstaller)
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name StockWallet
+          --icon icon.ico --add-data "icon.ico;." --add-data "web;web"
+          --collect-all webview --collect-all winotify app.py
+
+      - name: Build installer (Inno Setup)
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=${{ github.ref_name }} installer\StockWallet.iss
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/StockWallet.exe
+            installer/Output/StockWallet-Setup.exe
+          generate_release_notes: true

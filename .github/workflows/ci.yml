@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # 純邏輯測試(wallet / indicators / analysis)不需 GUI 依賴,CI 只裝 lint+test 工具
+      - run: pip install pytest ruff
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest

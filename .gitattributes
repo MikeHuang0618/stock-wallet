@@ -1,0 +1,6 @@
+# Normalize line endings so contributors on any OS get consistent diffs.
+* text=auto eol=lf
+
+# Binary assets — never touch line endings.
+*.ico binary
+*.png binary

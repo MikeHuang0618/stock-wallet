@@ -1,0 +1,13 @@
+# Stock Wallet — 工具設定(lint / 測試)。本專案為單檔腳本集合(非套件),
+# 依賴以 requirements*.txt 管理,不用 pip install -e。
+[tool.ruff]
+line-length = 140
+extend-exclude = ["scratch", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

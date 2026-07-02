@@ -1,0 +1,6 @@
+# 開發 / 打包依賴
+-r requirements.txt
+pytest>=8
+ruff>=0.5
+pyinstaller>=6
+pillow>=10
