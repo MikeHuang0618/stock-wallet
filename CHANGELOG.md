@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Gold Signals page: US/TW market toggle (synced with the global market switch).
+  TW gold uses Yuanta leveraged/inverse ETFs — 00708L (+2x long) and 00674R (−1x short);
+  added a volatility-decay warning for these daily-reset products.
+
+### Changed
+- Releases now ship a PyInstaller **onedir** build (installer + portable zip) instead of a
+  single-file exe, which trips far fewer antivirus false positives; documented Windows
+  Defender / SmartScreen handling in the README.
+
+### Todo
 - Mocked data-layer tests for `api.py` (Yahoo timeout / missing-value fallbacks).
 
 ## [0.7.0] - 2026-07-01

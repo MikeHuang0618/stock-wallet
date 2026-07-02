@@ -38,15 +38,26 @@ const INDICES_TW=[
 ];
 const INDICES=INDICES_US;   // 向下相容別名
 function activeIndices(){return STATE.market==='tw'?INDICES_TW:INDICES_US;}
-const GOLD=[
+// 黃金訊號:美股 / 台股各一組槓桿+反向 ETF + 金價參考。跟隨全域 STATE.market。
+// 台股無 -2x 黃金 ETF,反向只有 00674R (-1x),已如實標示。
+const GOLD_US=[
   {sym:'UGL',name:'ProShares Ultra Gold',short:'UGL',bias:'+2x 做多黃金',cls:'long'},
   {sym:'GLL',name:'ProShares UltraShort Gold',short:'GLL',bias:'-2x 做空黃金',cls:'short'},
-  {sym:'GC=F',name:'黃金期貨 COMEX',short:'GOLD',bias:'現貨參考',cls:'spot'},
+  {sym:'GC=F',name:'黃金期貨 COMEX (美元)',short:'GOLD',bias:'現貨參考',cls:'spot'},
 ];
+const GOLD_TW=[
+  {sym:'00708L.TW',name:'期元大S&P黃金正2',short:'00708L',bias:'+2x 做多黃金',cls:'long'},
+  {sym:'00674R.TW',name:'期元大S&P黃金反1',short:'00674R',bias:'-1x 做空黃金',cls:'short'},
+  {sym:'GC=F',name:'國際金價 COMEX (美元)',short:'GOLD',bias:'現貨參考',cls:'spot'},
+];
+function activeGold(){return STATE.market==='tw'?GOLD_TW:GOLD_US;}
+// 兩市場所有黃金代號(去重),用於一次抓齊報價與跨市場的訊號名稱查找
+const GOLD_SYMS=[...new Set([...GOLD_US,...GOLD_TW].map(g=>g.sym))];
+function goldMeta(sym){return [...GOLD_US,...GOLD_TW].find(g=>g.sym===sym)||{short:sym};}
 const PAGE_META={
   dashboard:{t:'主畫面',d:'大盤指數 · 觀察名單 · 重大事件與財報日曆'},
   wallet:{t:'我的錢包',d:'資產總覽 · 持倉分布 · 買賣紀錄與總結'},
-  gold:{t:'黃金訊號',d:'GLL / UGL 訊號 · CPI / 非農 / FOMC 影響評估'},
+  gold:{t:'黃金訊號',d:'美股 / 台股 槓桿黃金 ETF 訊號 · CPI / 非農 / FOMC 影響評估'},
   calendar:{t:'重大事件',d:'各年度重大事件與財報日曆 · 自訂事件'},
   settings:{t:'設定',d:'API 金鑰管理 · 資料匯入 / 匯出'},
   detail:{t:'標的詳細',d:'技術面圖表 · 均線 / 成交量 / KD / RSI / MACD 自選'},
@@ -246,7 +257,9 @@ function initSearch(){
 
 /* ---------- gold ---------- */
 function renderGoldPrices(){
-  $('#gold-prices').innerHTML=GOLD.map(g=>quoteCard(g.sym,{name:g.name,short:g.short,bias:g.bias,cls:g.cls,dec:2,clickable:true})).join('');
+  const g=activeGold();
+  const t=$('#gold-title');if(t)t.textContent=(STATE.market==='tw'?'台股':'美股')+'槓桿黃金 · '+g[0].short+' / '+g[1].short;
+  $('#gold-prices').innerHTML=g.map(x=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true})).join('');
 }
 function earningsEvents(){
   return Object.entries(STATE.earnings).map(([sym,info])=>({
@@ -298,7 +311,7 @@ function renderAlerts(){
     const p=STATE.quotes[a.tk]||{},now=p.price;
     let hit=false;if(now!=null)hit=a.cond==='above'?now>=a.lvl:now<=a.lvl;
     const key=a.tk+a.cond+a.lvl;if(hit)nowFiring.add(key);
-    const meta=GOLD.find(g=>g.sym===a.tk)||{short:a.tk};
+    const meta=goldMeta(a.tk);
     const condTxt=a.cond==='above'?'突破 ≥':'跌破 ≤';
     return `<div class="al ${hit?'hit':''}"><span class="k">${esc(meta.short)}</span><span class="cond">${condTxt}</span>
       <span class="lvl">${fmt(a.lvl)}</span><span class="now">現價<br>${now==null?'—':fmt(now)}</span>
@@ -309,7 +322,7 @@ function renderAlerts(){
   nowFiring.forEach(key=>{
     if(!STATE.firing.has(key)){
       const a=STATE.alerts.find(z=>z.tk+z.cond+z.lvl===key);
-      if(a){const meta=GOLD.find(g=>g.sym===a.tk)||{short:a.tk};
+      if(a){const meta=goldMeta(a.tk);
         const now=(STATE.quotes[a.tk]||{}).price;
         api().notify('🔔 價位訊號觸發',`${meta.short} ${a.cond==='above'?'突破':'跌破'} ${fmt(a.lvl)}(現價 ${fmt(now)})`);}
     }
@@ -317,9 +330,13 @@ function renderAlerts(){
   STATE.firing=nowFiring;
 }
 function persistAlerts(){api().save_alerts(STATE.alerts);}
+function refreshAlertSymbols(){
+  const sel=$('#a-tk');if(!sel)return;
+  sel.innerHTML=activeGold().map(g=>`<option value="${g.sym}">${g.short}</option>`).join('');
+  syncCustomSelect(sel);
+}
 function initAlertForm(){
-  $('#a-tk').innerHTML=GOLD.map(g=>`<option value="${g.sym}">${g.short}</option>`).join('');
-  syncCustomSelect($('#a-tk'));
+  refreshAlertSymbols();
   $('#a-add').onclick=async()=>{
     const tk=$('#a-tk').value,lvl=parseFloat($('#a-lvl').value),cond=$('#a-cond').value;
     if(isNaN(lvl)||lvl<=0){toast('請輸入有效價位');return;}
@@ -327,7 +344,7 @@ function initAlertForm(){
     STATE.firing.add(tk+cond+lvl); // 避免加入當下若已觸發立刻重複通知,交由下輪比較
     STATE.firing.delete(tk+cond+lvl);
     renderAlerts();$('#a-lvl').value='';
-    const meta=GOLD.find(g=>g.sym===tk)||{short:tk};
+    const meta=goldMeta(tk);
     api().notify('已新增價位訊號',`${meta.short} ${cond==='above'?'突破 ≥':'跌破 ≤'} ${fmt(lvl)}`);
     toast(`已新增 ${meta.short} 訊號`);
   };
@@ -1094,7 +1111,7 @@ async function refreshEarnings(){
 async function refreshAll(){
   const icon=$('#ricon');icon.classList.add('spin');$('#refresh').disabled=true;
   try{
-    const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD.map(g=>g.sym),...activeWatchlist().map(w=>w.sym)])];
+    const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];
     STATE.quotes=await api().get_quotes(syms);
     renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();
     if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
@@ -1113,10 +1130,14 @@ function initSidebar(){
     try{localStorage.setItem('sidebarCollapsed',c?'1':'0');}catch(e){}};
 }
 /* ---------- 美股 / 台股 切換 ---------- */
+// 用 .market-switch[data-market] 選取(排除錢包幣別切換,它是 data-ccy),
+// 主畫面與黃金頁各有一顆,兩顆同步反映全域 STATE.market。
+function marketSwitches(){return document.querySelectorAll('.market-switch[data-market]');}
 function applyMarketUI(){
-  const sw=$('#market-switch');if(!sw)return;
-  sw.dataset.market=STATE.market;
-  sw.querySelectorAll('.ms-btn').forEach(b=>b.classList.toggle('on',b.dataset.market===STATE.market));
+  marketSwitches().forEach(sw=>{
+    sw.dataset.market=STATE.market;
+    sw.querySelectorAll('.ms-btn').forEach(b=>b.classList.toggle('on',b.dataset.market===STATE.market));
+  });
 }
 function setMarket(m){
   if(m===STATE.market||(m!=='us'&&m!=='tw'))return;
@@ -1124,15 +1145,16 @@ function setMarket(m){
   try{localStorage.setItem('market',m);}catch(e){}
   applyMarketUI();
   renderIndices();renderWatchlist();renderDashEvents();
-  // 抓取新市場所需的即時報價與財報日
-  const syms=[...new Set([...activeIndices().map(i=>i.sym),...activeWatchlist().map(w=>w.sym)])];
-  api().get_quotes(syms).then(q=>{Object.assign(STATE.quotes,q);renderIndices();renderWatchlist();});
+  renderGoldPrices();refreshAlertSymbols();renderAlerts();
+  // 抓取新市場所需的即時報價與財報日(含黃金)
+  const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];
+  api().get_quotes(syms).then(q=>{Object.assign(STATE.quotes,q);renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();});
   refreshEarnings();
 }
 function initMarketSwitch(){
   STATE.market=localStorage.getItem('market')==='tw'?'tw':'us';
   applyMarketUI();
-  $('#market-switch')?.querySelectorAll('.ms-btn').forEach(b=>b.onclick=()=>setMarket(b.dataset.market));
+  marketSwitches().forEach(sw=>sw.querySelectorAll('.ms-btn').forEach(b=>b.onclick=()=>setMarket(b.dataset.market)));
 }
 function boot(){
   initTheme();

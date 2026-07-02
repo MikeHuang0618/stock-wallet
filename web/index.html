@@ -316,8 +316,14 @@
 
       <!-- ===== Gold Signal ===== -->
       <div class="page" id="page-gold">
-        <div class="sec-h"><span class="dot"></span>GLL / UGL 即時報價</div>
+        <div class="market-switch" data-market="us">
+          <div class="ms-thumb"></div>
+          <button class="ms-btn on" data-market="us"><span class="ms-flag">🇺🇸</span>美股</button>
+          <button class="ms-btn" data-market="tw"><span class="ms-flag">🇹🇼</span>台股</button>
+        </div>
+        <div class="sec-h"><span class="dot"></span><span id="gold-title">槓桿黃金 ETF 即時報價</span></div>
         <div class="qgrid" id="gold-prices" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))"></div>
+        <div class="lev-warn">⚠️ 槓桿 / 反向 ETF 採「每日重設」,長期報酬會因波動耗損(volatility decay)偏離標的倍數,不適合長期持有。本頁僅供研究,非投資建議。</div>
         <div class="spacer"></div>
         <div class="grid2">
           <div class="panel">
