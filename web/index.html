@@ -8,6 +8,7 @@
 </head>
 <body>
 <div class="app">
+  <div class="bg-blobs"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="side-brand">
@@ -286,6 +287,17 @@
               <option value="dark">Dark (深色)</option>
               <option value="light">Light (淺色)</option>
             </select>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
+          <h2><span class="dot"></span>效能模式</h2>
+          <div class="perf-toggle">
+            <div>
+              <div>關閉動畫與毛玻璃效果</div>
+              <div class="perf-desc">降低 GPU 負載,適合低階裝置或偏好簡潔介面的使用者。亦尊重系統「減少動態效果」設定。</div>
+            </div>
+            <label class="toggle-sw"><input type="checkbox" id="perf-toggle"><span class="slider"></span></label>
           </div>
         </div>
         <div class="spacer"></div>

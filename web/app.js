@@ -199,7 +199,7 @@ function quoteCard(sym,meta){
   const biasHtml=meta.bias?`<span class="bias ${meta.cls}">${meta.bias}</span>`:'';
   const rm=meta.removable?`<span class="rm" data-rm="${esc(sym)}">✕</span>`:'';
   const open=meta.clickable?` clk" data-open="${esc(sym)}" data-name="${esc(meta.name||sym)}`:'';
-  return `<div class="qcard${open}">${rm}
+  return `<div class="qcard${open}" data-sym="${esc(sym)}" style="--i:${meta._i||0}">${rm}
     <div class="tk"><span class="sym">${esc(meta.short||sym)}</span>${biasHtml}</div>
     <div class="nm">${esc(meta.name||'')}</div>
     <div class="row"><div class="price">${p.error||p.price==null?(p.price==null&&!p.error?'…':'—'):fmt(p.price,dec)}</div>
@@ -210,7 +210,7 @@ function quoteCard(sym,meta){
 function renderIndices(){
   const idx=activeIndices();
   $('#idx-count').textContent=`${idx.length} 項`;
-  $('#indices').innerHTML=idx.map(i=>quoteCard(i.sym,{name:i.name,short:i.short,bias:i.bias||'指數',cls:'idx',dec:2,clickable:i.clickable!==false})).join('');
+  $('#indices').innerHTML=idx.map((i,n)=>quoteCard(i.sym,{name:i.name,short:i.short,bias:i.bias||'指數',cls:'idx',dec:2,clickable:i.clickable!==false,_i:n})).join('');
 }
 function heatColor(pct){
   if(pct==null)return 'rgba(255,255,255,.04)';
@@ -234,7 +234,7 @@ function renderWatchlist(){
     box.querySelectorAll('.hm-tile[data-open]').forEach(t=>t.onclick=()=>openDetail(t.dataset.open,t.dataset.name));
   }else{
     box.className='qgrid';
-    box.innerHTML=wl.map(w=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true})).join('');
+    box.innerHTML=wl.map((w,n)=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true,_i:n})).join('');
     box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.rm));
   }
 }
@@ -288,7 +288,7 @@ function initSearch(){
 function renderGoldPrices(){
   const g=activeGold();
   const t=$('#gold-title');if(t)t.textContent=(STATE.market==='tw'?'台股':'美股')+'槓桿黃金 · '+g[0].short+' / '+g[1].short;
-  $('#gold-prices').innerHTML=g.map(x=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true})).join('');
+  $('#gold-prices').innerHTML=g.map((x,n)=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true,_i:n})).join('');
 }
 function earningsEvents(){
   return Object.entries(STATE.earnings).map(([sym,info])=>({
@@ -1046,6 +1046,29 @@ function renderSettingsKeys(){
   });
 }
 function loadSettings(){renderSettingsKeys();}
+/* ---------- Tick flash: price change highlight ---------- */
+let _prevPrices={};
+function snapshotPrices(){_prevPrices={};for(const[s,q]of Object.entries(STATE.quotes)){if(q.price!=null)_prevPrices[s]=q.price;}}
+function flashTicks(){
+  document.querySelectorAll('.qcard[data-sym]').forEach(card=>{
+    const sym=card.dataset.sym,oldP=_prevPrices[sym],newP=(STATE.quotes[sym]||{}).price;
+    if(oldP!=null&&newP!=null&&oldP!==newP){
+      card.classList.add(newP>oldP?'tick-up':'tick-down');
+      setTimeout(()=>card.classList.remove('tick-up','tick-down'),650);
+    }
+  });
+}
+/* ---------- Performance mode ---------- */
+function initPerfMode(){
+  const prefersReduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const stored=localStorage.getItem('perfLow');
+  const low=stored!=null?(stored==='1'):prefersReduced;
+  document.documentElement.dataset.perf=low?'low':'';
+  const cb=$('#perf-toggle');if(cb){cb.checked=low;cb.onchange=()=>{
+    const v=cb.checked;document.documentElement.dataset.perf=v?'low':'';
+    try{localStorage.setItem('perfLow',v?'1':'0');}catch(e){}
+  };}
+}
 function initSettings(){
   const tsel=$('#theme-sel');
   if(tsel){
@@ -1178,9 +1201,10 @@ async function refreshEarnings(){
 async function refreshAll(){
   const icon=$('#ricon');icon.classList.add('spin');$('#refresh').disabled=true;
   try{
+    snapshotPrices();
     const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];
     STATE.quotes=await api().get_quotes(syms);
-    renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();
+    renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();flashTicks();
     if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
     if(STATE.page==='wallet'&&!STATE.wallet.loading)loadWallet();
     const t=new Date();
@@ -1305,7 +1329,7 @@ function boot(){
   initTheme();
   initSidebar();
   initMarketSwitch();
-  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();
+  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();initPerfMode();
   document.querySelectorAll('select').forEach(createCustomSelect);
   $('#refresh').onclick=refreshAll;
   document.addEventListener('click',e=>{
