@@ -1,7 +1,8 @@
 ; Inno Setup script for Stock Wallet.
 ; Build locally:  ISCC.exe installer\StockWallet.iss
 ; (CI passes the tag as version:  ISCC.exe /DAppVersion=v0.7.0 installer\StockWallet.iss)
-; Requires dist\StockWallet.exe to exist (build it with PyInstaller first).
+; Requires the PyInstaller *onedir* output  dist\StockWallet\  (exe + _internal\).
+; onedir is used instead of onefile because it triggers far fewer antivirus false positives.
 
 #define AppName "Stock Wallet"
 #ifndef AppVersion
@@ -33,7 +34,8 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "..\dist\StockWallet.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Whole onedir tree (StockWallet.exe at the root + _internal\ dependencies).
+Source: "..\dist\StockWallet\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Stock Wallet"; Filename: "{app}\StockWallet.exe"

@@ -40,9 +40,30 @@ Download from [**Releases**](https://github.com/MikeHuang0618/stock-wallet/relea
 | Option | File | Notes |
 |--------|------|-------|
 | 🅰 Installer (recommended) | `StockWallet-Setup.exe` | Wizard; adds Start Menu / desktop shortcuts; uninstall via *Add or remove programs* |
-| 🅱 Portable | `StockWallet.exe` | Single file, double-click to run, USB-friendly |
+| 🅱 Portable | `StockWallet-portable-*.zip` | Unzip anywhere and run `StockWallet.exe` inside; no install |
 
 Requires 64-bit Windows 10/11 (WebView2 is built in).
+
+### ⚠️ Windows may flag the download (false positive)
+
+Stock Wallet is an **unsigned** app packaged with PyInstaller, so Windows Defender /
+SmartScreen may warn that the file is unrecognized — or even quarantine it as a virus
+(`Wacatac`, `Zusy`, `Malgent`, …). This is a **known false positive** for unsigned
+PyInstaller binaries; the app bundles no malware and all source is in this repo.
+
+To run it:
+
+- **SmartScreen "Windows protected your PC":** click **More info → Run anyway**.
+- **Defender deleted it / "the file contains a virus":** open **Windows Security → Virus &
+  threat protection → Protection history**, find the blocked item and choose
+  **Allow / Restore** (or add the target folder under *Exclusions* before downloading again).
+- Prefer the **installer** over the portable zip — the onedir build it installs trips fewer
+  heuristics than a single-file exe.
+- Still unsure? Scan it on [VirusTotal](https://www.virustotal.com/) — a few heuristic-only
+  hits confirm a false positive — or just [run from source](#run-from-source-developers).
+
+Maintainers can clear the detection for everyone by reporting the file to Microsoft as a
+false positive at <https://www.microsoft.com/wdsi/filesubmission>.
 
 ## Run from source (developers)
 
@@ -66,14 +87,16 @@ pytest              # golden tests: indicators / analysis / wallet
 
 ```bash
 python make_icon.py
-pyinstaller --noconfirm --onefile --windowed --name StockWallet ^
+# onedir (a folder, not a single file) — fewer antivirus false positives than --onefile
+pyinstaller --noconfirm --onedir --windowed --name StockWallet ^
   --icon icon.ico --add-data "icon.ico;." --add-data "web;web" ^
-  --collect-all webview --collect-all winotify app.py
+  --collect-all webview --collect-all winotify app.py   # output: dist\StockWallet\
 ISCC.exe installer\StockWallet.iss     # needs Inno Setup → installer\Output\StockWallet-Setup.exe
 ```
 
 CI automates this: pushing a `v*` tag (e.g. `git tag v0.7.0 && git push origin v0.7.0`)
-runs the tests, builds the exe and installer, and attaches both to a GitHub Release.
+runs the tests, builds the app (onedir), produces the installer + a portable zip, and
+attaches them to a GitHub Release.
 
 ---
 
