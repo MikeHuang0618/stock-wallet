@@ -65,12 +65,12 @@ const PAGE_META={
 const PIE_COLORS=['#e8c37a','#5bc0de','#c792ea','#38d39f','#ffb454','#ff6b6b','#7ec8ff','#f0a3c8','#a0e57a','#c0c4d0'];
 
 let STATE={events:[],twEvents:[],today:null,quotes:{},alerts:[],
-  market:'us',watchlists:{us:[],tw:[]},earnings:{},
+  market:'us',watchlists:{us:[],tw:[]},earnings:{},wlView:'cards',
   page:'dashboard',prevPage:'dashboard',firing:new Set(),
   aicfg:{provider:'none',prompt:'',keys:{},models:{}},
   wallet:{data:null,history:null,loading:false,charts:[],ccy:'USD',symName:''},
   detail:{sym:null,name:'',timeframe:'天',overlays:['sma_20'],panels:['volume','kd'],
-    custom:false,start:'',end:'',data:null,loading:false,charts:[]}};
+    chartType:'line',custom:false,start:'',end:'',data:null,loading:false,charts:[]}};
 
 /* 依目前選擇的市場 (美股 / 台股) 取用對應資料 */
 function activeWatchlist(){return STATE.watchlists[STATE.market]||[];}
@@ -211,13 +211,41 @@ function renderIndices(){
   $('#idx-count').textContent=`${idx.length} 項`;
   $('#indices').innerHTML=idx.map(i=>quoteCard(i.sym,{name:i.name,short:i.short,bias:i.bias||'指數',cls:'idx',dec:2,clickable:i.clickable!==false})).join('');
 }
+function heatColor(pct){
+  if(pct==null)return 'rgba(255,255,255,.04)';
+  const m=Math.min(Math.abs(pct)/3,1),a=(0.12+m*0.5).toFixed(2);  // 3% 達到最深
+  return pct>=0?`rgba(56,211,159,${a})`:`rgba(255,107,107,${a})`;
+}
+function heatTile(w){
+  const pct=(STATE.quotes[w.sym]||{}).changePct;
+  return `<div class="hm-tile clk" data-open="${esc(w.sym)}" data-name="${esc(w.name)}" style="background:${heatColor(pct)}">
+    <div class="hm-sym">${esc(w.sym)}</div>
+    <div class="hm-pct">${pct==null?'—':(pct>=0?'+':'')+fmt(pct)+'%'}</div></div>`;
+}
 function renderWatchlist(){
   const wl=activeWatchlist();
   $('#wl-count').textContent=`${wl.length} 檔`;
   const box=$('#watchlist');
-  if(!wl.length){box.innerHTML='<div class="empty">觀察名單是空的 · 用上方搜尋框加入標的</div>';return;}
-  box.innerHTML=wl.map(w=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true})).join('');
-  box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.rm));
+  if(!wl.length){box.className='qgrid';box.innerHTML='<div class="empty">觀察名單是空的 · 用上方搜尋框加入標的</div>';return;}
+  if(STATE.wlView==='heatmap'){
+    box.className='heatmap';
+    box.innerHTML=wl.map(heatTile).join('');
+    box.querySelectorAll('.hm-tile[data-open]').forEach(t=>t.onclick=()=>openDetail(t.dataset.open,t.dataset.name));
+  }else{
+    box.className='qgrid';
+    box.innerHTML=wl.map(w=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true})).join('');
+    box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.rm));
+  }
+}
+function initWatchlistView(){
+  STATE.wlView=localStorage.getItem('wlView')==='heatmap'?'heatmap':'cards';
+  const sw=$('#wl-view');if(!sw)return;
+  sw.querySelectorAll('button').forEach(b=>{
+    b.classList.toggle('on',b.dataset.v===STATE.wlView);
+    b.onclick=()=>{STATE.wlView=b.dataset.v;try{localStorage.setItem('wlView',b.dataset.v);}catch(e){}
+      sw.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.v===STATE.wlView));
+      renderWatchlist();};
+  });
 }
 async function addWatch(sym,name){
   const wl=activeWatchlist();
@@ -466,6 +494,7 @@ function chartGeo(o){
   const vals=[];
   (o.lines||[]).forEach(s=>s.values.forEach(v=>{if(v!=null)vals.push(v);}));
   if(o.bars)o.bars.values.forEach(v=>{if(v!=null)vals.push(v);});
+  if(o.candles){o.candles.high.forEach(v=>{if(v!=null)vals.push(v);});o.candles.low.forEach(v=>{if(v!=null)vals.push(v);});}
   (o.guides||[]).forEach(g=>vals.push(g));
   if(o.zeroLine)vals.push(0);
   if(o.bars&&o.bars.baseline==='bottom')vals.push(0);
@@ -487,6 +516,13 @@ function chartSVG(o,g){
   if(o.bars){const base=(o.bars.baseline==='zero')?yAtG(g,0):yAtG(g,g.yMin);const bw=Math.max(1,g.plotW/g.n*0.62);
     o.bars.values.forEach((v,i)=>{if(v==null)return;const x=xAtG(g,i),y=yAtG(g,v),top=Math.min(y,base),hh=Math.abs(y-base);
       s+=`<rect x="${(x-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.5,hh).toFixed(1)}" fill="${o.bars.colors[i]}" opacity="0.75"/>`;});}
+  if(o.candles){const cd=o.candles,bw=Math.max(1.2,g.plotW/g.n*0.6);
+    for(let i=0;i<g.n;i++){const op=cd.open[i],hi=cd.high[i],lw=cd.low[i],cl=cd.close[i];
+      if(op==null||hi==null||lw==null||cl==null)continue;
+      const x=xAtG(g,i),col=cl>=op?'var(--up)':'var(--down)';
+      s+=`<line x1="${x.toFixed(1)}" y1="${yAtG(g,hi).toFixed(1)}" x2="${x.toFixed(1)}" y2="${yAtG(g,lw).toFixed(1)}" stroke="${col}" stroke-width="1"/>`;
+      const yo=yAtG(g,op),yc=yAtG(g,cl),top=Math.min(yo,yc),bh=Math.max(1,Math.abs(yo-yc));
+      s+=`<rect x="${(x-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${col}"/>`;}}
   (o.lines||[]).forEach(sr=>{s+=polySegs(sr.values,i=>xAtG(g,i),v=>yAtG(g,v),sr.color,sr.w);});
   const steps=Math.min(5,g.n);for(let k=0;k<steps;k++){const i=Math.round(k*(g.n-1)/Math.max(1,steps-1)),x=xAtG(g,i);
     const anchor=k===0?'start':k===steps-1?'end':'middle';
@@ -501,6 +537,7 @@ function mountChart(boxEl,o){
   const lines=o.lines||[];
   const dots=lines.map(sr=>{const d=document.createElement('div');d.className='cross-dot';d.style.background=sr.color;wrap.appendChild(d);return d;});
   const model={wrap,g,lines,labels:o.labels,dots,fmtY:o.fmtY};
+  if(o.candles)model.candles=o.candles;
   if(o.bars&&o.barName){model.barVals=o.bars.values;model.barName=o.barName;model.barFmt=o.barFmt||o.fmtY;}
   STATE.detail.charts.push(model);
   return model;
@@ -538,6 +575,9 @@ function showCrossTip(models,i,e){
   const tip=$('#cross-tip');const date=(models[0].labels||[])[i]||'';
   let rows=`<div class="ct-d">${esc(date)}</div>`;
   models.forEach(m=>{
+    if(m.candles){const cd=m.candles,oo=cd.open[i],hh=cd.high[i],ll=cd.low[i],cc=cd.close[i];
+      if(cc!=null){const col=cc>=oo?'var(--up)':'var(--down)';
+        rows+=`<div class="ct-r"><span><i style="background:${col}"></i>開高低收</span><span>${fmt(oo)} / ${fmt(hh)} / ${fmt(ll)} / ${fmt(cc)}</span></div>`;}}
     m.lines.forEach(sr=>{const val=sr.values[i];if(val==null)return;
       rows+=`<div class="ct-r"><span><i style="background:${sr.color}"></i>${esc(sr.name)}</span><span>${m.fmtY?m.fmtY(val):val.toFixed(2)}</span></div>`;});
     if(m.barVals&&m.barVals[i]!=null)
@@ -571,6 +611,9 @@ function initDetail(){
       if(STATE.detail.sym)renderDetail();
     };
   });
+  // 線 / K 棒 切換(不需重抓,直接重繪)
+  $('#d-charttype').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    STATE.detail.chartType=b.dataset.ct;syncDetailControls();if(STATE.detail.sym&&STATE.detail.data)renderDetail();});
   // 自訂區間
   $('#d-custom-toggle').onclick=()=>$('#d-range').classList.toggle('show');
   $('#d-range').querySelectorAll('[data-quick]').forEach(b=>b.onclick=()=>{
@@ -605,6 +648,7 @@ function syncDetailControls(){
   const cu=STATE.detail.custom;
   $('#d-timeframe').querySelectorAll('button').forEach(b=>b.classList.toggle('on',!cu&&b.dataset.tf===STATE.detail.timeframe));
   $('#d-custom-toggle').classList.toggle('on',cu);
+  $('#d-charttype').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.ct===STATE.detail.chartType));
   $('#d-overlays').querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',STATE.detail.overlays.includes(c.dataset.ov)));
   [0,1].forEach(s=>{
     const sel = $('#d-panel-'+s);
@@ -642,13 +686,21 @@ function renderDetail(){
   if(!data||data.error){$('#d-price-chart').innerHTML=`<div class="chart-msg">無法載入資料 ${data&&data.error?'· '+esc(data.error):''}</div>`;
     $('#d-panel-chart-0').innerHTML='';$('#d-panel-chart-1').innerHTML='';$('#d-signals').innerHTML='';return;}
   $('#d-signals').innerHTML=renderSignals(data.signals);
-  // price chart + MA overlays
-  const priceLines=[{name:'收盤',color:'#e8c37a',values:data.close,w:1.8}];
-  const legend=[{name:'收盤',color:'#e8c37a',val:lastVal(data.close)}];
-  OVERLAYS.forEach(o=>{if(data.overlays[o.id]){priceLines.push({name:o.label,color:o.color,values:data.overlays[o.id]});
-    legend.push({name:o.label,color:o.color,val:lastVal(data.overlays[o.id])});}});
+  // price chart:線 or K 棒,均線疊圖皆以線繪於上層
+  const overlayLines=[];
+  OVERLAYS.forEach(o=>{if(data.overlays[o.id])overlayLines.push({name:o.label,color:o.color,values:data.overlays[o.id]});});
+  const ovLegend=overlayLines.map(l=>({name:l.name,color:l.color,val:lastVal(l.values)}));
+  const candle=STATE.detail.chartType==='candle'&&data.open;
+  let opts,legend;
+  if(candle){
+    legend=[{name:'K 棒',color:'#9aa0b0',val:lastVal(data.close)}].concat(ovLegend);
+    opts={height:250,labels:data.labels,candles:{open:data.open,high:data.high,low:data.low,close:data.close},lines:overlayLines,fmtY:v=>v.toFixed(2)};
+  }else{
+    legend=[{name:'收盤',color:'#e8c37a',val:lastVal(data.close)}].concat(ovLegend);
+    opts={height:250,labels:data.labels,lines:[{name:'收盤',color:'#e8c37a',values:data.close,w:1.8}].concat(overlayLines),fmtY:v=>v.toFixed(2)};
+  }
   $('#d-price-legend').innerHTML=legendHTML(legend);
-  mountChart($('#d-price-chart'),{height:250,labels:data.labels,lines:priceLines,fmtY:v=>v.toFixed(2)});
+  mountChart($('#d-price-chart'),opts);
   // panels
   [0,1].forEach(slot=>{
     const name=d.panels[slot],box=$('#d-panel-chart-'+slot);
@@ -1189,7 +1241,7 @@ function boot(){
   initTheme();
   initSidebar();
   initMarketSwitch();
-  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();
+  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();
   document.querySelectorAll('select').forEach(createCustomSelect);
   $('#refresh').onclick=refreshAll;
   document.addEventListener('click',e=>{

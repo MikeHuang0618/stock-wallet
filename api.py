@@ -389,7 +389,7 @@ class Api:
         o, h, lo, c, v = ohlcv["open"], ohlcv["high"], ohlcv["low"], ohlcv["close"], ohlcv["volume"]
         result = {
             "labels": ohlcv["labels"],
-            "close": c,
+            "open": o, "high": h, "low": lo, "close": c,
             "overlays": {},
             "panels": {},
             "meta": {"timeframe": timeframe, "bars": len(c),
@@ -449,7 +449,9 @@ class Api:
         if i <= 0:
             return
         result["labels"] = result["labels"][i:]
-        result["close"] = result["close"][i:]
+        for key in ("open", "high", "low", "close"):
+            if key in result:
+                result[key] = result[key][i:]
         for k in result["overlays"]:
             result["overlays"][k] = result["overlays"][k][i:]
         for pd in result["panels"].values():

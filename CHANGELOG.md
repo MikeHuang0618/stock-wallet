@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ticker detail: line / candlestick toggle for the price chart (candles show OHLC in the
+  crosshair tooltip; MA overlays drawn on top).
+- Dashboard watchlist: card / heatmap view toggle (tiles colored green↔red by % change).
 - Ticker detail: automatic technical-signal detection (MA golden/death cross &
   trend alignment, KD cross, RSI overbought/oversold, MACD histogram flip, Bollinger
   breakout, gap) shown as colored badges. Pure `signals.py` module with golden tests.

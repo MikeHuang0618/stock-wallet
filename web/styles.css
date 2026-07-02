@@ -244,6 +244,12 @@ body{
 .seg button{border:none;background:none;color:var(--muted);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s}
 .seg button:hover{color:var(--ink);background:rgba(255,255,255,.04)}
 .seg button.on{background:linear-gradient(145deg,var(--gold-2),var(--gold-dim));color:#3a2c07}
+.seg-sm button{padding:4px 12px;font-size:12px}
+.heatmap{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px}
+.hm-tile{border:1px solid var(--panel-brd);border-radius:12px;padding:15px 10px;cursor:pointer;transition:.15s;text-align:center}
+.hm-tile:hover{transform:translateY(-2px);border-color:rgba(232,195,122,.45)}
+.hm-sym{font-weight:800;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hm-pct{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:5px}
 .chip{border:1px solid var(--panel-brd);background:rgba(255,255,255,.03);color:var(--muted);padding:7px 13px;
   border-radius:999px;font-size:12.5px;font-weight:700;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:6px}
 .chip:hover{color:var(--ink);border-color:rgba(232,195,122,.4)}

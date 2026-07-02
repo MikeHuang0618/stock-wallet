@@ -49,7 +49,8 @@
         <div class="sec-h"><span class="dot"></span>大盤指數 <span class="count" id="idx-count"></span></div>
         <div class="qgrid" id="indices"></div>
         <div class="spacer"></div>
-        <div class="sec-h"><span class="dot"></span>我的觀察名單 <span class="count" id="wl-count"></span></div>
+        <div class="sec-h"><span class="dot"></span>我的觀察名單 <span class="count" id="wl-count" style="margin-left:8px"></span>
+          <div class="seg seg-sm" id="wl-view" style="margin-left:auto"><button data-v="cards" class="on">卡片</button><button data-v="heatmap">熱力圖</button></div></div>
         <div class="searchbar">
           <span class="mag">🔍</span>
           <input id="search" type="text" placeholder="輸入英文代號或股票代碼查詢 (例如 AAPL、NVDA、2330.TW、7203.T) 後加入觀察名單" autocomplete="off">
@@ -147,7 +148,9 @@
         <div class="sec-h" style="margin-top:4px"><span class="dot"></span>技術訊號 <span class="count" style="font-weight:400">依最新一根 K 棒</span></div>
         <div class="signal-row" id="d-signals"></div>
         <div class="chart-card">
-          <div class="ch-h"><span class="ch-t">股價走勢(固定)</span><div class="legend2" id="d-price-legend"></div></div>
+          <div class="ch-h"><span class="ch-t">股價走勢</span>
+            <div class="seg seg-sm" id="d-charttype"><button data-ct="line" class="on">線</button><button data-ct="candle">K 棒</button></div>
+            <div class="legend2" id="d-price-legend"></div></div>
           <div id="d-price-chart"><div class="chart-msg">載入中…</div></div>
         </div>
         <div class="chart-card">
