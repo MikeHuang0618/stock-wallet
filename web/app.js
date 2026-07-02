@@ -66,6 +66,7 @@ const PIE_COLORS=['#e8c37a','#5bc0de','#c792ea','#38d39f','#ffb454','#ff6b6b','#
 
 let STATE={events:[],twEvents:[],today:null,quotes:{},alerts:[],
   market:'us',watchlists:{us:[],tw:[]},earnings:{},wlView:'cards',
+  palette:{open:false,items:[],base:[],sel:0,q:'',timer:null},
   page:'dashboard',prevPage:'dashboard',firing:new Set(),
   aicfg:{provider:'none',prompt:'',keys:{},models:{}},
   wallet:{data:null,history:null,loading:false,charts:[],ccy:'USD',symName:''},
@@ -1237,11 +1238,74 @@ function initMarketSwitch(){
   applyMarketUI();
   marketSwitches().forEach(sw=>sw.querySelectorAll('.ms-btn').forEach(b=>b.onclick=()=>setMarket(b.dataset.market)));
 }
+/* ---------- 命令面板 (Ctrl/⌘+K) ---------- */
+const PALETTE_PAGES=[
+  {id:'dashboard',label:'主畫面',ic:'🏠'},{id:'wallet',label:'我的錢包',ic:'💼'},
+  {id:'gold',label:'黃金訊號',ic:'🪙'},{id:'calendar',label:'重大事件',ic:'📅'},
+  {id:'settings',label:'設定',ic:'⚙️'},
+];
+function paletteLocalSymbols(){
+  const seen=new Set(),out=[];
+  const add=(sym,name)=>{if(sym&&!seen.has(sym)){seen.add(sym);out.push({sym,name:name||sym});}};
+  (STATE.watchlists.us||[]).forEach(w=>add(w.sym,w.name));
+  (STATE.watchlists.tw||[]).forEach(w=>add(w.sym,w.name));
+  [...GOLD_US,...GOLD_TW].forEach(g=>add(g.sym,g.name));
+  return out;
+}
+function openPalette(){STATE.palette.open=true;$('#cmdk-bg').classList.add('show');
+  const inp=$('#cmdk-input');inp.value='';inp.focus();buildPalette('');}
+function closePalette(){STATE.palette.open=false;$('#cmdk-bg').classList.remove('show');}
+function buildPalette(q){
+  q=q.trim();STATE.palette.q=q;const ql=q.toLowerCase();
+  const pages=PALETTE_PAGES.filter(p=>!q||p.label.toLowerCase().includes(ql)||p.id.includes(ql))
+    .map(p=>({type:'page',id:p.id,ic:p.ic,label:p.label,sub:'前往頁面'}));
+  const locals=(q?paletteLocalSymbols().filter(s=>s.sym.toLowerCase().includes(ql)||(s.name||'').toLowerCase().includes(ql)):[])
+    .slice(0,6).map(s=>({type:'symbol',sym:s.sym,name:s.name,ic:'📈',label:s.sym,sub:s.name||'標的'}));
+  STATE.palette.base=[...pages,...locals];STATE.palette.items=STATE.palette.base.slice();
+  STATE.palette.sel=0;renderPalette();
+  clearTimeout(STATE.palette.timer);
+  if(q.length>=1){STATE.palette.timer=setTimeout(async()=>{
+    let list;try{list=await api().search_symbol(q);}catch(e){return;}
+    if(!STATE.palette.open||STATE.palette.q!==q)return;
+    const have=new Set(STATE.palette.base.filter(i=>i.type==='symbol').map(i=>i.sym));
+    const remote=(list||[]).filter(r=>!have.has(r.sym)).slice(0,8)
+      .map(r=>({type:'symbol',sym:r.sym,name:r.name,ic:'🔍',label:r.sym,sub:`${r.name||''} · ${r.exch||r.type||''}`}));
+    STATE.palette.items=STATE.palette.base.concat(remote);renderPalette();
+  },260);}
+}
+function renderPalette(){
+  const box=$('#cmdk-list'),items=STATE.palette.items;
+  if(!items.length){box.innerHTML='<div class="cmdk-empty">找不到符合的頁面或標的</div>';return;}
+  box.innerHTML=items.map((it,i)=>`<div class="cmdk-item${i===STATE.palette.sel?' sel':''}" data-i="${i}">
+    <span class="cmdk-ic">${it.ic}</span><span class="cmdk-lb">${esc(it.label)}<span class="cmdk-sub">${esc(it.sub||'')}</span></span></div>`).join('');
+  box.querySelectorAll('.cmdk-item').forEach(el=>{
+    el.onmousemove=()=>{STATE.palette.sel=+el.dataset.i;highlightPalette();};
+    el.onclick=()=>choosePalette(+el.dataset.i);});
+}
+function highlightPalette(){$('#cmdk-list').querySelectorAll('.cmdk-item').forEach((el,i)=>el.classList.toggle('sel',i===STATE.palette.sel));
+  const sel=$('#cmdk-list').querySelector('.cmdk-item.sel');if(sel)sel.scrollIntoView({block:'nearest'});}
+function choosePalette(i){const it=STATE.palette.items[i];if(!it)return;closePalette();
+  if(it.type==='page')showPage(it.id);else openDetail(it.sym,it.name);}
+function initPalette(){
+  const inp=$('#cmdk-input');
+  inp.oninput=()=>buildPalette(inp.value);
+  inp.onkeydown=e=>{const n=STATE.palette.items.length;
+    if(e.key==='ArrowDown'){e.preventDefault();if(n)STATE.palette.sel=(STATE.palette.sel+1)%n;highlightPalette();}
+    else if(e.key==='ArrowUp'){e.preventDefault();if(n)STATE.palette.sel=(STATE.palette.sel-1+n)%n;highlightPalette();}
+    else if(e.key==='Enter'){e.preventDefault();choosePalette(STATE.palette.sel);}
+    else if(e.key==='Escape'){closePalette();}};
+  $('#cmdk-bg').onclick=e=>{if(e.target.id==='cmdk-bg')closePalette();};
+  $('#cmdk-open')&&($('#cmdk-open').onclick=openPalette);
+  document.addEventListener('keydown',e=>{
+    if((e.ctrlKey||e.metaKey)&&(e.key==='k'||e.key==='K')){e.preventDefault();STATE.palette.open?closePalette():openPalette();}
+    else if(e.key==='/'&&!STATE.palette.open&&!/^(input|textarea|select)$/i.test(e.target.tagName||'')){e.preventDefault();openPalette();}
+  });
+}
 function boot(){
   initTheme();
   initSidebar();
   initMarketSwitch();
-  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();
+  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();
   document.querySelectorAll('select').forEach(createCustomSelect);
   $('#refresh').onclick=refreshAll;
   document.addEventListener('click',e=>{

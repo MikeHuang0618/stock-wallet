@@ -245,6 +245,21 @@ body{
 .seg button:hover{color:var(--ink);background:rgba(255,255,255,.04)}
 .seg button.on{background:linear-gradient(145deg,var(--gold-2),var(--gold-dim));color:#3a2c07}
 .seg-sm button{padding:4px 12px;font-size:12px}
+.kbd{font-size:10px;opacity:.55;border:1px solid var(--panel-brd);border-radius:5px;padding:1px 5px;margin-left:2px}
+.cmdk-bg{position:fixed;inset:0;background:rgba(6,7,10,.55);backdrop-filter:blur(4px);display:none;align-items:flex-start;justify-content:center;z-index:100;padding-top:12vh}
+.cmdk-bg.show{display:flex}
+.cmdk{width:560px;max-width:92vw;background:rgba(22,24,32,.97);border:1px solid var(--panel-brd);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;backdrop-filter:blur(18px)}
+.cmdk-top{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--panel-brd)}
+.cmdk-mag{font-size:16px;color:var(--muted)}
+#cmdk-input{flex:1;background:none;border:none;outline:none;color:var(--ink);font-size:15px;font-family:inherit}
+.cmdk-esc{font-size:10px;color:var(--muted);border:1px solid var(--panel-brd);border-radius:6px;padding:2px 7px}
+.cmdk-list{max-height:46vh;overflow-y:auto;padding:6px}
+.cmdk-empty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
+.cmdk-item{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer}
+.cmdk-item.sel{background:rgba(232,195,122,.14)}
+.cmdk-ic{font-size:16px;width:22px;text-align:center;flex-shrink:0}
+.cmdk-lb{display:flex;flex-direction:column;gap:1px;font-size:14px;font-weight:600;min-width:0}
+.cmdk-sub{font-size:11px;color:var(--muted);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .heatmap{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px}
 .hm-tile{border:1px solid var(--panel-brd);border-radius:12px;padding:15px 10px;cursor:pointer;transition:.15s;text-align:center}
 .hm-tile:hover{transform:translateY(-2px);border-color:rgba(232,195,122,.45)}

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Command palette (Ctrl/⌘+K, or `/`): jump to any page or search any ticker symbol
+  (local watchlist/gold + Yahoo search) and open its detail page; keyboard navigable.
 - Ticker detail: line / candlestick toggle for the price chart (candles show OHLC in the
   crosshair tooltip; MA overlays drawn on top).
 - Dashboard watchlist: card / heatmap view toggle (tiles colored green↔red by % change).

@@ -33,6 +33,7 @@
         <div class="desc" id="pg-desc">大盤指數即時概覽與個人觀察名單</div>
       </div>
       <div class="tb-actions">
+        <button class="btn" id="cmdk-open" title="快速搜尋 (Ctrl / ⌘ + K)">🔍 搜尋 <span class="kbd">Ctrl K</span></button>
         <div class="updated" id="updated">尚未更新</div>
         <button class="btn gold" id="refresh"><span id="ricon">⟳</span> 更新報價</button>
       </div>
@@ -380,6 +381,17 @@
       <button class="btn" id="ai-modal-cancel">取消</button>
       <button class="btn gold" id="ai-modal-save">儲存</button>
     </div>
+  </div>
+</div>
+
+<div class="cmdk-bg" id="cmdk-bg">
+  <div class="cmdk">
+    <div class="cmdk-top">
+      <span class="cmdk-mag">🔍</span>
+      <input id="cmdk-input" type="text" placeholder="搜尋頁面或標的代號…(↑↓ 選擇,Enter 前往)" autocomplete="off" spellcheck="false">
+      <span class="cmdk-esc">Esc</span>
+    </div>
+    <div class="cmdk-list" id="cmdk-list"></div>
   </div>
 </div>
 
