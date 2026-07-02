@@ -24,6 +24,7 @@ import webview
 
 import indicators as ta
 import analysis
+import signals as sig
 import wallet as wl
 from analysis import TIMEFRAMES, DEFAULT_AI_PROMPT, PROVIDER_MODELS
 
@@ -430,6 +431,9 @@ class Api:
                 result["panels"]["bollinger"] = {"kind": "band",
                                                  "series": {"上軌": ub, "中軌": mid,
                                                             "下軌": lb, "收盤": c}}
+
+        # 技術訊號:用完整(暖身)序列偵測最新狀態,不隨顯示範圍裁切。
+        result["signals"] = sig.detect_all(o, h, lo, c, v)
 
         # 指標已用「暖身+可見」的完整序列算好,現在裁掉早於 visible_start 的暖身段,
         # 讓 MA60 等指標在整個顯示範圍都有值。

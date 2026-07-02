@@ -627,6 +627,11 @@ async function loadDetail(){
   renderDetail();
   if(STATE.detail.autoAi){STATE.detail.autoAi=false;maybeAutoAi();}
 }
+function renderSignals(sigs){
+  if(!sigs||!sigs.length)return '<span class="sig-empty">目前無明顯技術訊號</span>';
+  const arrow=dir=>dir==='bullish'?'▲':dir==='bearish'?'▼':'•';
+  return sigs.map(s=>`<span class="sig-badge ${esc(s.dir)}">${arrow(s.dir)} ${esc(s.label)}<span class="n">· ${esc(s.note)}</span></span>`).join('');
+}
 function renderDetail(){
   const d=STATE.detail,data=d.data;
   STATE.detail.charts=[];hideCross();
@@ -635,7 +640,8 @@ function renderDetail(){
     $('#d-price').textContent=fmt(q.price);$('#d-price').className='p '+dir;
     $('#d-chg').className='c '+dir;$('#d-chg').textContent=q.change==null?'':`${ar} ${fmt(Math.abs(q.change))} (${fmt(Math.abs(q.changePct))}%)`;}
   if(!data||data.error){$('#d-price-chart').innerHTML=`<div class="chart-msg">無法載入資料 ${data&&data.error?'· '+esc(data.error):''}</div>`;
-    $('#d-panel-chart-0').innerHTML='';$('#d-panel-chart-1').innerHTML='';return;}
+    $('#d-panel-chart-0').innerHTML='';$('#d-panel-chart-1').innerHTML='';$('#d-signals').innerHTML='';return;}
+  $('#d-signals').innerHTML=renderSignals(data.signals);
   // price chart + MA overlays
   const priceLines=[{name:'收盤',color:'#e8c37a',values:data.close,w:1.8}];
   const legend=[{name:'收盤',color:'#e8c37a',val:lastVal(data.close)}];
@@ -880,9 +886,17 @@ function setWalletCcy(c){
   applyWalletCcyUI();
   if(STATE.wallet.data)renderWallet();
   renderWalletCharts();
+  // 反向同步全域市場:USD→us, TWD→tw
+  if(!_syncing){
+    _syncing=true;
+    const m=c==='TWD'?'tw':'us';
+    if(m!==STATE.market) setMarket(m);
+    _syncing=false;
+  }
 }
 function initWalletCcySwitch(){
-  STATE.wallet.ccy=localStorage.getItem('walletCcy')==='TWD'?'TWD':'USD';
+  // 從全域 market 衍生幣別,確保啟動時三顆按鈕一致
+  STATE.wallet.ccy=STATE.market==='tw'?'TWD':'USD';
   applyWalletCcyUI();
   $('#wallet-ccy-switch')?.querySelectorAll('.ms-btn').forEach(b=>b.onclick=()=>setWalletCcy(b.dataset.ccy));
 }
@@ -1130,8 +1144,9 @@ function initSidebar(){
     try{localStorage.setItem('sidebarCollapsed',c?'1':'0');}catch(e){}};
 }
 /* ---------- 美股 / 台股 切換 ---------- */
-// 用 .market-switch[data-market] 選取(排除錢包幣別切換,它是 data-ccy),
-// 主畫面與黃金頁各有一顆,兩顆同步反映全域 STATE.market。
+// 用 .market-switch[data-market] 選取主畫面與黃金頁的市場切換鈕,
+// 錢包的 #wallet-ccy-switch (data-ccy USD/TWD) 也透過 setMarket↔setWalletCcy 雙向同步,
+// 三顆切換鈕共同反映全域 STATE.market (us/tw) 與 STATE.wallet.ccy (USD/TWD)。
 function marketSwitches(){return document.querySelectorAll('.market-switch[data-market]');}
 function applyMarketUI(){
   marketSwitches().forEach(sw=>{
@@ -1139,11 +1154,25 @@ function applyMarketUI(){
     sw.querySelectorAll('.ms-btn').forEach(b=>b.classList.toggle('on',b.dataset.market===STATE.market));
   });
 }
+let _syncing=false; // 防止 setMarket ↔ setWalletCcy 循環呼叫
 function setMarket(m){
   if(m===STATE.market||(m!=='us'&&m!=='tw'))return;
   STATE.market=m;
   try{localStorage.setItem('market',m);}catch(e){}
   applyMarketUI();
+  // 同步錢包幣別:us→USD, tw→TWD
+  if(!_syncing){
+    _syncing=true;
+    const ccy=m==='tw'?'TWD':'USD';
+    if(ccy!==STATE.wallet.ccy){
+      STATE.wallet.ccy=ccy;
+      try{localStorage.setItem('walletCcy',ccy);}catch(e){}
+      applyWalletCcyUI();
+      if(STATE.wallet.data)renderWallet();
+      renderWalletCharts();
+    }
+    _syncing=false;
+  }
   renderIndices();renderWatchlist();renderDashEvents();
   renderGoldPrices();refreshAlertSymbols();renderAlerts();
   // 抓取新市場所需的即時報價與財報日(含黃金)

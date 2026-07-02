@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ticker detail: automatic technical-signal detection (MA golden/death cross &
+  trend alignment, KD cross, RSI overbought/oversold, MACD histogram flip, Bollinger
+  breakout, gap) shown as colored badges. Pure `signals.py` module with golden tests.
 - Gold Signals page: US/TW market toggle (synced with the global market switch).
   TW gold uses Yuanta leveraged/inverse ETFs — 00708L (+2x long) and 00674R (−1x short);
   added a volatility-decay warning for these daily-reset products.
