@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Command palette (Ctrl/⌘+K, or `/`): jump to any page or search any ticker symbol
+  (local watchlist/gold + Yahoo search) and open its detail page; keyboard navigable.
+- Ticker detail: line / candlestick toggle for the price chart (candles show OHLC in the
+  crosshair tooltip; MA overlays drawn on top).
+- Dashboard watchlist: card / heatmap view toggle (tiles colored green↔red by % change).
+- Ticker detail: automatic technical-signal detection (MA golden/death cross &
+  trend alignment, KD cross, RSI overbought/oversold, MACD histogram flip, Bollinger
+  breakout, gap) shown as colored badges. Pure `signals.py` module with golden tests.
+- Gold Signals page: US/TW market toggle (synced with the global market switch).
+  TW gold uses Yuanta leveraged/inverse ETFs — 00708L (+2x long) and 00674R (−1x short);
+  added a volatility-decay warning for these daily-reset products.
+
+### Changed
+- Releases now ship a PyInstaller **onedir** build (installer + portable zip) instead of a
+  single-file exe, which trips far fewer antivirus false positives; documented Windows
+  Defender / SmartScreen handling in the README.
+
+### Todo
 - Mocked data-layer tests for `api.py` (Yahoo timeout / missing-value fallbacks).
 
 ## [0.7.0] - 2026-07-01

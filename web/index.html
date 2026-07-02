@@ -8,6 +8,7 @@
 </head>
 <body>
 <div class="app">
+  <div class="bg-blobs"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="side-brand">
@@ -33,6 +34,7 @@
         <div class="desc" id="pg-desc">大盤指數即時概覽與個人觀察名單</div>
       </div>
       <div class="tb-actions">
+        <button class="btn" id="cmdk-open" title="快速搜尋 (Ctrl / ⌘ + K)">🔍 搜尋 <span class="kbd">Ctrl K</span></button>
         <div class="updated" id="updated">尚未更新</div>
         <button class="btn gold" id="refresh"><span id="ricon">⟳</span> 更新報價</button>
       </div>
@@ -49,7 +51,8 @@
         <div class="sec-h"><span class="dot"></span>大盤指數 <span class="count" id="idx-count"></span></div>
         <div class="qgrid" id="indices"></div>
         <div class="spacer"></div>
-        <div class="sec-h"><span class="dot"></span>我的觀察名單 <span class="count" id="wl-count"></span></div>
+        <div class="sec-h"><span class="dot"></span>我的觀察名單 <span class="count" id="wl-count" style="margin-left:8px"></span>
+          <div class="seg seg-sm" id="wl-view" style="margin-left:auto"><button data-v="cards" class="on">卡片</button><button data-v="heatmap">熱力圖</button></div></div>
         <div class="searchbar">
           <span class="mag">🔍</span>
           <input id="search" type="text" placeholder="輸入英文代號或股票代碼查詢 (例如 AAPL、NVDA、2330.TW、7203.T) 後加入觀察名單" autocomplete="off">
@@ -144,8 +147,12 @@
           </div>
         </div>
         <div class="ctrl-row"><span class="lbl">均線疊圖</span><div id="d-overlays" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+        <div class="sec-h" style="margin-top:4px"><span class="dot"></span>技術訊號 <span class="count" style="font-weight:400">依最新一根 K 棒</span></div>
+        <div class="signal-row" id="d-signals"></div>
         <div class="chart-card">
-          <div class="ch-h"><span class="ch-t">股價走勢(固定)</span><div class="legend2" id="d-price-legend"></div></div>
+          <div class="ch-h"><span class="ch-t">股價走勢</span>
+            <div class="seg seg-sm" id="d-charttype"><button data-ct="line" class="on">線</button><button data-ct="candle">K 棒</button></div>
+            <div class="legend2" id="d-price-legend"></div></div>
           <div id="d-price-chart"><div class="chart-msg">載入中…</div></div>
         </div>
         <div class="chart-card">
@@ -284,6 +291,17 @@
         </div>
         <div class="spacer"></div>
         <div class="panel">
+          <h2><span class="dot"></span>效能模式</h2>
+          <div class="perf-toggle">
+            <div>
+              <div>關閉動畫與毛玻璃效果</div>
+              <div class="perf-desc">降低 GPU 負載,適合低階裝置或偏好簡潔介面的使用者。亦尊重系統「減少動態效果」設定。</div>
+            </div>
+            <label class="toggle-sw"><input type="checkbox" id="perf-toggle"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
           <h2><span class="dot"></span>API 金鑰</h2>
           <div id="set-keys"></div>
           <div class="ai-note">金鑰僅儲存於本機 %APPDATA%\StockWallet\ai_config.json,不會上傳。</div>
@@ -316,8 +334,14 @@
 
       <!-- ===== Gold Signal ===== -->
       <div class="page" id="page-gold">
-        <div class="sec-h"><span class="dot"></span>GLL / UGL 即時報價</div>
+        <div class="market-switch" data-market="us">
+          <div class="ms-thumb"></div>
+          <button class="ms-btn on" data-market="us"><span class="ms-flag">🇺🇸</span>美股</button>
+          <button class="ms-btn" data-market="tw"><span class="ms-flag">🇹🇼</span>台股</button>
+        </div>
+        <div class="sec-h"><span class="dot"></span><span id="gold-title">槓桿黃金 ETF 即時報價</span></div>
         <div class="qgrid" id="gold-prices" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))"></div>
+        <div class="lev-warn">⚠️ 槓桿 / 反向 ETF 採「每日重設」,長期報酬會因波動耗損(volatility decay)偏離標的倍數,不適合長期持有。本頁僅供研究,非投資建議。</div>
         <div class="spacer"></div>
         <div class="grid2">
           <div class="panel">
@@ -369,6 +393,17 @@
       <button class="btn" id="ai-modal-cancel">取消</button>
       <button class="btn gold" id="ai-modal-save">儲存</button>
     </div>
+  </div>
+</div>
+
+<div class="cmdk-bg" id="cmdk-bg">
+  <div class="cmdk">
+    <div class="cmdk-top">
+      <span class="cmdk-mag">🔍</span>
+      <input id="cmdk-input" type="text" placeholder="搜尋頁面或標的代號…(↑↓ 選擇,Enter 前往)" autocomplete="off" spellcheck="false">
+      <span class="cmdk-esc">Esc</span>
+    </div>
+    <div class="cmdk-list" id="cmdk-list"></div>
   </div>
 </div>
 
