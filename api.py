@@ -13,7 +13,6 @@
 
 import json
 import os
-import shutil
 import sqlite3
 import sys
 import time
@@ -35,7 +34,6 @@ except Exception:
     _HAS_NOTIFY = False
 
 APP_NAME = "StockWallet"
-OLD_APP_NAME = "GoldSignal"   # 舊版設定資料夾,首次啟動自動搬遷
 APP_ID = "StockWallet"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=2mo&interval=1d"
 YAHOO_SEARCH = ("https://query1.finance.yahoo.com/v1/finance/search"
@@ -62,7 +60,7 @@ TW_VIX = "TWVIX"   # 台股波動率指數
 
 # ---------------------------------------------------------------------------
 # 2026 經濟事件排程 (以官方 BLS / Federal Reserve 公布為準,可用
-# %APPDATA%/GoldSignal/events.json 覆寫)  type: CPI / NFP / FOMC
+# %APPDATA%/StockWallet/events.json 覆寫)  type: CPI / NFP / FOMC
 # ---------------------------------------------------------------------------
 DEFAULT_EVENTS = [
     {"date": "2026-07-14", "type": "CPI", "title": "6 月 CPI 通膨數據", "time": "20:30", "impact": "high"},
@@ -144,19 +142,7 @@ def resource_path(rel):
 def data_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     d = os.path.join(base, APP_NAME)
-    if not os.path.exists(d):
-        os.makedirs(d, exist_ok=True)
-        # 首次啟動:把舊版 GoldSignal 的設定搬過來
-        old = os.path.join(base, OLD_APP_NAME)
-        if os.path.isdir(old):
-            for fn in ("alerts.json", "watchlist.json", "events.json",
-                       "ai_config.json", "wallet.db"):
-                src = os.path.join(old, fn)
-                if os.path.exists(src):
-                    try:
-                        shutil.copy2(src, os.path.join(d, fn))
-                    except Exception:
-                        pass
+    os.makedirs(d, exist_ok=True)
     return d
 
 

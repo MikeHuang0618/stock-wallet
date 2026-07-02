@@ -42,8 +42,7 @@ Download from [**Releases**](https://github.com/MikeHuang0618/stock-wallet/relea
 | 🅰 Installer (recommended) | `StockWallet-Setup.exe` | Wizard; adds Start Menu / desktop shortcuts; uninstall via *Add or remove programs* |
 | 🅱 Portable | `StockWallet.exe` | Single file, double-click to run, USB-friendly |
 
-Requires 64-bit Windows 10/11 (WebView2 is built in). On first launch, settings from a
-previous *GoldSignal* install are migrated automatically.
+Requires 64-bit Windows 10/11 (WebView2 is built in).
 
 ## Run from source (developers)
 
