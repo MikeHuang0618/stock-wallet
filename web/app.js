@@ -82,6 +82,11 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');cl
 function fmt(n,d=2){return n==null||isNaN(n)?'—':Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});}
 function daysBetween(a,b){return Math.round((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/86400000);}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// 鍵盤可近性:讓元素可聚焦(tabindex)並具 button 語意,Enter/Space 觸發 click。
+function keyActivatable(el){
+  el.setAttribute('tabindex','0');el.setAttribute('role','button');
+  el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}});
+}
 
 /* Theme Engine */
 function initTheme(){
@@ -198,7 +203,7 @@ function quoteCard(sym,meta){
   const chg=p.change==null?(p.error?'無資料':'讀取中…'):`${arrow} ${fmt(Math.abs(p.change),dec)} (${fmt(Math.abs(p.changePct))}%)`;
   const biasHtml=meta.bias?`<span class="bias ${meta.cls}">${meta.bias}</span>`:'';
   const rm=meta.removable?`<span class="rm" data-rm="${esc(sym)}">✕</span>`:'';
-  const open=meta.clickable?` clk" data-open="${esc(sym)}" data-name="${esc(meta.name||sym)}`:'';
+  const open=meta.clickable?` clk" data-open="${esc(sym)}" data-name="${esc(meta.name||sym)}" tabindex="0" role="button`:'';
   return `<div class="qcard${open}" data-sym="${esc(sym)}" style="--i:${meta._i||0}">${rm}
     <div class="tk"><span class="sym">${esc(meta.short||sym)}</span>${biasHtml}</div>
     <div class="nm">${esc(meta.name||'')}</div>
@@ -276,9 +281,9 @@ function initSearch(){
         <span class="rs">${esc(r.sym)}</span><span class="rn">${esc(r.name)}</span>
         <span class="re">${esc(r.exch||r.type||'')}</span><span class="radd">＋</span></div>`).join('');
       res.classList.add('show');
-      res.querySelectorAll('.rrow[data-sym]').forEach(row=>row.onclick=()=>{
+      res.querySelectorAll('.rrow[data-sym]').forEach(row=>{row.onclick=()=>{
         addWatch(row.dataset.sym,row.dataset.name);res.classList.remove('show');inp.value='';
-      });
+      };keyActivatable(row);});
     },260);
   });
   document.addEventListener('click',e=>{if(!e.target.closest('.searchbar'))res.classList.remove('show');});
@@ -494,8 +499,11 @@ function xAtG(g,i){
   return g.n<=1 ? g.PL+g.plotW/2 : g.PL+pad+i*(g.plotW-2*pad)/(g.n-1);
 }
 function yAtG(g,v){return g.PT+g.plotH-(v-g.yMin)/(g.yMax-g.yMin)*g.plotH;}
-function chartGeo(o){
-  const {W,PL,PR,PT,PB}=CHART_GEO,H=o.height;
+function chartGeo(o,width){
+  const {PL,PR,PT,PB}=CHART_GEO,H=o.height;
+  // viewBox 寬 = 容器實寬(後備 760)。與顯示寬 1:1,preserveAspectRatio="none" 便不再
+  // 於寬螢幕橫向拉伸文字。crosshair 的 xAtG/px 對映用比例,g.W 改變仍一致。
+  const W=Math.max(320,Math.round(width||CHART_GEO.W));
   const n=(o.labels||[]).length,plotW=W-PL-PR,plotH=H-PT-PB;
   const vals=[];
   (o.lines||[]).forEach(s=>s.values.forEach(v=>{if(v!=null)vals.push(v);}));
@@ -536,7 +544,7 @@ function chartSVG(o,g){
   return `<svg viewBox="0 0 ${g.W} ${g.H}" preserveAspectRatio="none" style="height:${g.H}px">${s}</svg>`;
 }
 function mountChart(boxEl,o){
-  const g=chartGeo(o);
+  const g=chartGeo(o,boxEl.clientWidth);
   if(!g){boxEl.innerHTML='<div class="chart-msg">此範圍資料不足以計算</div>';return null;}
   boxEl.innerHTML=`<div class="chartwrap" style="height:${o.height}px">${chartSVG(o,g)}<div class="cross-v"></div></div>`;
   const wrap=boxEl.querySelector('.chartwrap');
@@ -808,6 +816,9 @@ function renderWalletPie(sel,holdings,ccy){
 function renderWallet(){
   const d=STATE.wallet.data;
   if(!d||!d.ccy){$('#wallet-summary').innerHTML='<div class="qcard"><div class="nm">無法載入</div></div>';return;}
+  // 記錄三個清單的捲動位置,重建 innerHTML 後還原(避免 auto-refresh 把使用者捲回頂端)。
+  const _scrollIds=['#wallet-holdings','#wallet-tx','#wallet-deposits'],_scroll={};
+  _scrollIds.forEach(id=>{const el=$(id);if(el)_scroll[id]=el.scrollTop;});
   const U=d.ccy.USD,T=d.ccy.TWD,fx=d.fx;   // fx = 1 USD = fx TWD
   const ccy=STATE.wallet.ccy,b=d.ccy[ccy];
   // ----- 頂列「總計」兩張卡:依所選幣別換算 (美金→美金 / 台幣→台幣) -----
@@ -865,7 +876,7 @@ function renderWallet(){
       <span class="pnl ${dr}">${p==null?'—':signMoney(p,ccy)}<br><span style="font-size:11px">${h.pnl_pct==null?'':a+' '+fmt(Math.abs(h.pnl_pct))+'%'}</span></span>
       <span class="rpnl ${_dcls(rpl)}" title="已實現損益">${rpl===0?'—':signMoney(rpl,ccy)}</span></div>`;
   }).join('');
-  hb.querySelectorAll('.hrow[data-open]').forEach(r=>r.onclick=()=>openDetail(r.dataset.open,r.dataset.name));}
+  hb.querySelectorAll('.hrow[data-open]').forEach(r=>{r.onclick=()=>openDetail(r.dataset.open,r.dataset.name);keyActivatable(r);});}
   // 錢包資金紀錄 (所選幣別)
   const deps=(d.deposits||[]).filter(x=>(x.currency||'USD')===ccy);
   $('#wallet-depcount').textContent=`${deps.length} 筆`;
@@ -896,6 +907,7 @@ function renderWallet(){
       return `<div class="txgroup"><div class="txgroup-head"><span class="txgroup-date">${esc(gp.date)}</span><span class="txgroup-count">${gp.items.length} 筆</span></div><div class="txgroup-body">${rows}</div></div>`;
     }).join('');
     tb.querySelectorAll('.del').forEach(bn=>bn.onclick=()=>armDelete(bn,async()=>{await api().wallet_delete(+bn.dataset.del);loadWallet();}));}
+  _scrollIds.forEach(id=>{const el=$(id);if(el&&_scroll[id]!=null)el.scrollTop=_scroll[id];});
   requestAnimationFrame(syncHoldingsHeight);
 }
 function renderWalletCharts(){
@@ -913,12 +925,12 @@ function renderWalletCharts(){
   drawStaticChart(pc,{height:180,labels,bars:{values:h.daily_pnl,colors,baseline:'zero'},zeroLine:true,fmtY:fmtVol});
 }
 function drawStaticChart(box,o){
-  const g=chartGeo(o);
+  const g=chartGeo(o,box.clientWidth);
   if(!g){box.innerHTML='<div class="chart-msg">資料不足</div>';return;}
   box.innerHTML=`<div class="chartwrap" style="height:${o.height}px">${chartSVG(o,g)}</div>`;
 }
 function mountWalletChart(boxEl,o){
-  const g=chartGeo(o);
+  const g=chartGeo(o,boxEl.clientWidth);
   if(!g){boxEl.innerHTML='<div class="chart-msg">此範圍資料不足以計算</div>';return null;}
   boxEl.innerHTML=`<div class="chartwrap" style="height:${o.height}px">${chartSVG(o,g)}<div class="cross-v"></div></div>`;
   const wrap=boxEl.querySelector('.chartwrap');
@@ -928,6 +940,13 @@ function mountWalletChart(boxEl,o){
   STATE.wallet.charts.push(model);
   return model;
 }
+// 視窗尺寸改變時,以新的容器寬重繪當前頁圖表(debounce 200ms),避免文字被拉伸。
+function redrawCurrentCharts(){
+  if(STATE.page==='detail'){if(STATE.detail.sym&&STATE.detail.data)renderDetail();}
+  else if(STATE.page==='wallet'){if(STATE.wallet.history)renderWalletCharts();}
+}
+let _chartResizeTimer=null;
+window.addEventListener('resize',()=>{clearTimeout(_chartResizeTimer);_chartResizeTimer=setTimeout(redrawCurrentCharts,200);});
 function hideWalletCross(){
   STATE.wallet.charts.forEach(m=>{const v=m.wrap.querySelector('.cross-v');if(v)v.style.display='none';m.dots.forEach(d=>d.style.display='none');});
   const tip=$('#cross-tip');if(tip)tip.classList.remove('show');
@@ -989,10 +1008,10 @@ function initWalletSymSearch(){
         <span class="rs">${esc(r.sym)}</span><span class="rn">${esc(r.name)}</span>
         <span class="re">${esc(r.exch||r.type||'')}</span><span class="radd">＋</span></div>`).join('');
       res.classList.add('show');
-      res.querySelectorAll('.rrow[data-sym]').forEach(row=>row.onclick=()=>{
+      res.querySelectorAll('.rrow[data-sym]').forEach(row=>{row.onclick=()=>{
         inp.value=row.dataset.sym;STATE.wallet.symName=row.dataset.name||'';
         res.classList.remove('show');$('#w-qty').focus();
-      });
+      };keyActivatable(row);});
     },260);
   });
   document.addEventListener('click',e=>{if(!e.target.closest('.w-sym-wrap'))res.classList.remove('show');});
@@ -1232,7 +1251,7 @@ async function refreshAll(){
     if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
     if(STATE.page==='wallet'&&!STATE.wallet.loading)loadWallet();
     const t=new Date();
-    $('#updated').innerHTML=`報價已更新<br>${t.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+    $('#updated').innerHTML=`延遲報價 · 更新<br>${t.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
   }catch(e){toast('報價更新失敗');}
   finally{icon.classList.remove('spin');$('#refresh').disabled=false;}
 }
@@ -1359,6 +1378,12 @@ function boot(){
   document.addEventListener('click',e=>{
     const card=e.target.closest('.qcard[data-open]');
     if(card&&!e.target.closest('.rm'))openDetail(card.dataset.open,card.dataset.name);
+  });
+  // qcard 以委派處理點擊,鍵盤(Enter/Space)同樣委派:聚焦卡片按鍵即開啟詳細頁。
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Enter'&&e.key!==' ')return;
+    const card=e.target.closest&&e.target.closest('.qcard[data-open]');
+    if(card&&!e.target.closest('.rm')){e.preventDefault();openDetail(card.dataset.open,card.dataset.name);}
   });
   renderIndices();renderGoldPrices();
   loadStatic().then(refreshAll);
