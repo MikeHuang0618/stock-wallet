@@ -71,6 +71,7 @@ false positive at <https://www.microsoft.com/wdsi/filesubmission>.
 git clone https://github.com/MikeHuang0618/stock-wallet.git
 cd stock-wallet
 python -m venv .venv && .venv\Scripts\activate     # Windows
+python -m pip install -U pip                        # avoid cp950 decode errors on old pip
 pip install -r requirements.txt
 python app.py
 ```

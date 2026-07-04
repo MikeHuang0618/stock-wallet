@@ -305,12 +305,14 @@ function renderEventsInto(boxId,countId,events,limit){
     const d=daysBetween(today,e.date),soon=d<=3;
     const label=d===0?'今天':d===1?'明天':d,unit=d<=1?'':'天後',md=e.date.slice(5).replace('-','/');
     const tm=e.time==='—'?'':`(${e.time==='盤後'?'':'台北 '}${e.time})· `;
-    return `<div class="ev ${soon?'soon':''}" style="cursor:pointer" onclick="openCalendarToDate('${e.date}')">
-      <div class="impact ${e.impact}"></div>
-      <div class="badge ${e.type}">${e.type}</div>
-      <div class="body"><div class="t">${esc(e.title)}</div><div class="m">${md}${tm}${TYPE_NAMES[e.type]||'自訂'}</div></div>
+    return `<div class="ev ${soon?'soon':''}" style="cursor:pointer" data-date="${esc(e.date)}">
+      <div class="impact ${esc(e.impact)}"></div>
+      <div class="badge ${esc(e.type)}">${esc(e.type)}</div>
+      <div class="body"><div class="t">${esc(e.title)}</div><div class="m">${esc(md)}${esc(tm)}${esc(TYPE_NAMES[e.type]||'自訂')}</div></div>
       <div class="cd ${d===0?'today':''}"><div class="n">${label}</div><div class="u">${unit}</div></div></div>`;
   }).join('');
+  // 事件委派取代 inline onclick(相容 CSP):點事件卡跳到該日期的日曆。
+  box.onclick=ev=>{const el=ev.target.closest('.ev[data-date]');if(el)openCalendarToDate(el.dataset.date);};
 }
 function renderEvents(){renderEventsInto('#events','#evcount',STATE.events,9);}
 function renderDashEvents(){
@@ -408,10 +410,10 @@ function renderCustomEvents(){
   if(!evs.length){box.innerHTML='<div class="empty">目前沒有自訂事件</div>';return;}
   box.innerHTML=evs.map((e,i)=>`
     <div class="txrow" style="padding:4px 8px">
-      <span class="badge ${e.type}">${e.type}</span>
+      <span class="badge ${esc(e.type)}">${esc(e.type)}</span>
       <span class="g">${esc(e.date)}</span>
       <span class="g" style="flex:1;font-weight:600">${esc(e.title)}</span>
-      <span class="del" data-delce="${i}" data-cedate="${e.date}" data-cetitle="${esc(e.title)}">🗑 刪除</span>
+      <span class="del" data-delce="${i}" data-cedate="${esc(e.date)}" data-cetitle="${esc(e.title)}">🗑 刪除</span>
     </div>
   `).join('');
   box.querySelectorAll('[data-delce]').forEach(b=>b.onclick=async()=>{
@@ -461,7 +463,7 @@ function renderCalendarInto(boxId,events,year='2026'){
       const ds=`${year}-${String(m+1).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
       const types=[...new Set(byDate[ds]||[])],isToday=(ds===STATE.today);
       const cls='day d'+(types.length?' has':'')+(isToday?' today':'');
-      const marks=types.length?`<div class="mk">${types.map(t=>`<i class="${t}"></i>`).join('')}</div>`:'';
+      const marks=types.length?`<div class="mk">${types.map(t=>`<i class="${esc(t)}"></i>`).join('')}</div>`:'';
       const tip=types.length?`data-tip="${ds.slice(5)} · ${(byDate[ds]).map(t=>TYPE_NAMES[t]||'自訂').join('、')}"`:'';
       cells+=`<div class="${cls}" data-date="${ds}" ${tip}>${dn}${marks}</div>`;
     }
@@ -1097,6 +1099,9 @@ function initSettings(){
       initTheme();
     };
   }
+  // 勾選「API 金鑰」時提示備份檔含明文金鑰(切換即時反映)。
+  const keysChk=$('#io-checks').querySelector('input[value="keys"]'),keysWarn=$('#io-keys-warn');
+  if(keysChk&&keysWarn){const syncKeysWarn=()=>keysWarn.style.display=keysChk.checked?'block':'none';keysChk.onchange=syncKeysWarn;syncKeysWarn();}
   $('#export-btn').onclick=async()=>{
     const secs=[...$('#io-checks').querySelectorAll('input:checked')].map(c=>c.value);
     if(!secs.length){toast('請至少勾選一項');return;}

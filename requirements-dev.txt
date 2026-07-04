@@ -1,4 +1,4 @@
-# 開發 / 打包依賴
+# Development / packaging dependencies
 -r requirements.txt
 pytest>=8
 ruff>=0.5

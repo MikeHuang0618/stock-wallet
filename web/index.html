@@ -2,6 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>市場儀表板</title>
 <link rel="stylesheet" href="styles.css">
@@ -315,6 +316,7 @@
             <label><input type="checkbox" value="watchlist" checked> 觀察名單</label>
             <label><input type="checkbox" value="keys"> API 金鑰</label>
           </div>
+          <div id="io-keys-warn" class="ai-note" style="display:none;color:var(--down)">⚠ 備份檔含明文金鑰,請妥善保管,勿分享或上傳。</div>
           <div class="ai-row" style="margin-top:14px">
             <button class="btn gold" id="export-btn">⬇ 匯出所選項目</button>
             <button class="btn" id="import-btn">⬆ 匯入檔案(更新 App)</button>

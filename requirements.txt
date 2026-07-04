@@ -1,4 +1,4 @@
-# 執行期依賴(跑 app 需要)
+# Runtime dependencies (required to run the app)
 pywebview>=5,<7
 requests>=2.31
 winotify>=1.1
