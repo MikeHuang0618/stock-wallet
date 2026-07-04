@@ -345,6 +345,14 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
   padding:9px 12px;font-size:13px;font-family:inherit;outline:none}
 .modal input:focus{border-color:rgba(232,195,122,.5)}
 .modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:22px}
+/* 已實現損益明細 modal 清單 */
+.rpnl-list{max-height:50vh;overflow:auto;margin:6px 0 2px}
+.rpnl-row{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--panel-brd)}
+.rpnl-row .rp-sym{font-weight:800;min-width:64px}
+.rpnl-row .rp-nm{color:var(--muted);flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rpnl-row .rp-val{font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto}
+.rpnl-row .rp-val.up{color:var(--up)} .rpnl-row .rp-val.down{color:var(--down)}
+.rp-closed{margin-left:6px;font-size:10px;padding:1px 6px;border-radius:6px;background:var(--panel-brd);color:var(--muted)}
 
 /* AI badge in detail header */
 .d-aibadge{display:none;align-items:center;gap:8px;padding:8px 14px;border-radius:12px;font-size:13px;font-weight:700;

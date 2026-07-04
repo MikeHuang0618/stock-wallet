@@ -82,6 +82,45 @@ def test_realized_pnl_no_sell():
     assert result["total_realized_pnl"] == A(0)
 
 
+# ---------- realized_breakdown ----------
+def test_realized_breakdown_includes_closed_position():
+    """完全平倉的標的必須出現在明細,且 closed=True(aggregate_holdings 會丟棄它)。"""
+    txs = [tx(1, "AAPL", 10, 100, "2026-01-01"),
+           tx(2, "AAPL", 10, 130, "2026-01-05", side="sell")]
+    detail = w.realized_breakdown(txs)
+    assert len(detail) == 1
+    assert detail[0]["symbol"] == "AAPL"
+    assert detail[0]["closed"] is True
+    assert detail[0]["realized_pnl"] == A(300)
+    assert detail[0]["last_date"] == "2026-01-05"
+
+
+def test_realized_breakdown_partial_matches_aggregate():
+    """部分平倉標的的 realized_pnl 與 aggregate_holdings 一致,closed=False。"""
+    txs = [tx(1, "AAPL", 10, 100, "2026-01-01"),
+           tx(2, "AAPL", 4, 130, "2026-01-05", side="sell")]
+    detail = w.realized_breakdown(txs)
+    agg = w.aggregate_holdings(txs)
+    assert len(detail) == 1
+    assert detail[0]["closed"] is False
+    assert detail[0]["realized_pnl"] == A(120)
+    assert detail[0]["realized_pnl"] == A(agg["holdings"][0]["realized_pnl"])
+
+
+def test_realized_breakdown_no_sell_is_empty():
+    """全買未賣 → 無已實現損益 → 空明細。"""
+    txs = [tx(1, "AAPL", 10, 100, "2026-01-01")]
+    assert w.realized_breakdown(txs) == []
+
+
+def test_realized_breakdown_sorted_by_abs_desc():
+    """依 |realized_pnl| 降冪排序。"""
+    txs = [tx(1, "AAA", 10, 100, "2026-01-01"), tx(2, "AAA", 10, 110, "2026-01-02", side="sell"),  # +100
+           tx(3, "BBB", 10, 100, "2026-01-01"), tx(4, "BBB", 10, 70, "2026-01-02", side="sell")]   # -300
+    detail = w.realized_breakdown(txs)
+    assert [d["symbol"] for d in detail] == ["BBB", "AAA"]
+
+
 # ---------- build_history ----------
 def test_history_value_and_daily_pnl():
     txs = [tx(1, "AAPL", 10, 100, "2026-01-01"), tx(2, "AAPL", 5, 110, "2026-01-03")]

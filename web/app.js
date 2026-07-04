@@ -861,7 +861,7 @@ function renderWallet(){
     <div class="qcard"><div class="nm">總市值</div><div class="row"><div class="price">${money(b.total_value,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">總成本</div><div class="row"><div class="price">${money(b.total_cost,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">未實現損益</div><div class="row"><div class="price ${_dcls(pnl)}">${signMoney(pnl,ccy)}</div><div class="chg ${_dcls(pnl)}">${_arr(pnl)} ${fmt(Math.abs(pct))}%</div></div></div>
-    <div class="qcard"><div class="nm">已實現損益</div><div class="row"><div class="price ${_dcls(rp)}">${signMoney(rp,ccy)}</div></div></div>
+    <div class="qcard clk" data-rpnl tabindex="0" role="button"><div class="nm">已實現損益 ›</div><div class="row"><div class="price ${_dcls(rp)}">${signMoney(rp,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">持有檔數</div><div class="row"><div class="price">${b.holdings.length}</div></div></div>`;
   $('#wallet-hcount').textContent=`${b.holdings.length} 檔`;
   const hb=$('#wallet-holdings');
@@ -1016,9 +1016,29 @@ function initWalletSymSearch(){
   });
   document.addEventListener('click',e=>{if(!e.target.closest('.w-sym-wrap'))res.classList.remove('show');});
 }
+// 已實現損益明細 modal(沿用 #ai-modal 的 .modal-bg/.show 模式)。
+function openRealizedModal(){
+  const b=STATE.wallet.data&&STATE.wallet.data.ccy&&STATE.wallet.data.ccy[STATE.wallet.ccy];
+  const detail=(b&&b.realized_detail)||[],ccy=STATE.wallet.ccy,box=$('#rpnl-list');
+  if(!detail.length)box.innerHTML='<div class="empty">尚無已實現損益</div>';
+  else box.innerHTML=detail.map(d=>`<div class="rpnl-row">
+      <span class="rp-sym">${esc(d.symbol)}</span>
+      <span class="rp-nm">${esc(d.name||'')}${d.closed?'<span class="rp-closed">已平倉</span>':''}</span>
+      <span class="rp-val ${_dcls(d.realized_pnl)}">${signMoney(d.realized_pnl,ccy)}</span>
+    </div>`).join('');
+  $('#rpnl-modal').classList.add('show');
+}
+function closeRealizedModal(){$('#rpnl-modal').classList.remove('show');}
 function initWalletForm(){
   initWalletCcySwitch();
   initWalletSymSearch();
+  // 已實現損益卡點擊 → 明細 modal(委派於穩定容器 #wallet-summary,免每次重繪重綁)。
+  $('#wallet-summary').addEventListener('click',e=>{if(e.target.closest('[data-rpnl]'))openRealizedModal();});
+  $('#wallet-summary').addEventListener('keydown',e=>{
+    if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-rpnl]')){e.preventDefault();openRealizedModal();}});
+  $('#rpnl-close').onclick=closeRealizedModal;
+  $('#rpnl-modal').onclick=e=>{if(e.target.id==='rpnl-modal')closeRealizedModal();};   // 點背景關閉
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#rpnl-modal').classList.contains('show'))closeRealizedModal();});
   window.addEventListener('resize',()=>{if(STATE.page==='wallet')syncHoldingsHeight();});
   $('#w-date').value=(STATE.today||new Date().toISOString().slice(0,10));
   $('#w-add').onclick=async()=>{

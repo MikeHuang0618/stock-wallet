@@ -876,6 +876,7 @@ class Api:
             block = wl.summarize_currency(c_holds, realized, deps)
             block["day_date"] = next((h.get("market_date") for h in c_holds if h.get("market_date")), None)
             block["prev_date"] = next((h.get("prev_date") for h in c_holds if h.get("prev_date")), None)
+            block["realized_detail"] = wl.realized_breakdown(c_txs)   # 各標的已實現損益(含已平倉)
             ccy_blocks[ccy] = block
 
         fx = self._fx_twd_per_usd()   # 1 USD = fx TWD

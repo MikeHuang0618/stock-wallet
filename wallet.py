@@ -20,11 +20,13 @@ def _resolve_side(t):
     return ("buy" if q >= 0 else "sell"), abs(q)
 
 
-def aggregate_holdings(transactions):
-    """把交易彙總成目前持倉。已平倉(淨數量歸零)的標的不列入。
-    採平均成本法:賣出時以當下平均成本沖銷成本。
-    回傳 {"holdings": [...], "total_realized_pnl": float}。
-    每筆 holding 含 realized_pnl(該標的已實現損益)。"""
+def _accumulate_positions(transactions):
+    """把交易依平均成本法彙總成各標的部位(內部共用,不對外)。
+
+    回傳 {symbol: {qty, cost, name, realized_pnl, last_date}}。賣出時以當下平均成本
+    沖銷成本並累加已實現損益;淨數量歸零(平倉)時 qty/cost 歸零。
+    aggregate_holdings 與 realized_breakdown 共用此彙總,避免重複實作損益數學。
+    """
     order = sorted(transactions, key=lambda t: (t.get("date", ""), t.get("id", 0)))
     pos = {}
     for t in order:
@@ -32,9 +34,11 @@ def aggregate_holdings(transactions):
         side, q = _resolve_side(t)
         p = float(t["price"])
         e = pos.setdefault(s, {"qty": 0.0, "cost": 0.0, "name": t.get("name") or s,
-                                "realized_pnl": 0.0})
+                                "realized_pnl": 0.0, "last_date": t.get("date")})
         if t.get("name"):
             e["name"] = t["name"]
+        if t.get("date"):
+            e["last_date"] = t["date"]      # order 已依日期排序,最後一筆即最新交易日
         if side == "buy":
             e["qty"] += q
             e["cost"] += q * p
@@ -47,6 +51,15 @@ def aggregate_holdings(transactions):
             if abs(e["qty"]) < EPS:
                 e["qty"] = 0.0
                 e["cost"] = 0.0
+    return pos
+
+
+def aggregate_holdings(transactions):
+    """把交易彙總成目前持倉。已平倉(淨數量歸零)的標的不列入。
+    採平均成本法:賣出時以當下平均成本沖銷成本。
+    回傳 {"holdings": [...], "total_realized_pnl": float}。
+    每筆 holding 含 realized_pnl(該標的已實現損益)。"""
+    pos = _accumulate_positions(transactions)
     total_realized = sum(e["realized_pnl"] for e in pos.values())
     out = []
     for s, e in pos.items():
@@ -57,6 +70,24 @@ def aggregate_holdings(transactions):
                     "avg_cost": avg, "cost_basis": e["cost"],
                     "realized_pnl": e["realized_pnl"]})
     return {"holdings": out, "total_realized_pnl": total_realized}
+
+
+def realized_breakdown(transactions):
+    """各標的的已實現損益明細(含已平倉標的——aggregate_holdings 會把它們丟棄)。
+
+    回傳 [{symbol, name, realized_pnl, closed, last_date}],依 |realized_pnl| 降冪。
+    只列出有已實現損益的標的(realized_pnl != 0);全買未賣 → 空清單。
+    與 aggregate_holdings 共用 _accumulate_positions,損益數字保證一致。
+    """
+    pos = _accumulate_positions(transactions)
+    out = []
+    for s, e in pos.items():
+        if abs(e["realized_pnl"]) < EPS:
+            continue
+        out.append({"symbol": s, "name": e["name"], "realized_pnl": e["realized_pnl"],
+                    "closed": abs(e["qty"]) < EPS, "last_date": e.get("last_date")})
+    out.sort(key=lambda x: abs(x["realized_pnl"]), reverse=True)
+    return out
 
 
 def enrich_holding(holding, quote, same_day_txs):
