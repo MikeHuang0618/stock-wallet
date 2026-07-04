@@ -11,13 +11,17 @@
 資料來源:Yahoo Finance(延遲報價,僅供參考)。
 """
 
+import copy
 import json
+import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
+from logging.handlers import RotatingFileHandler
 
 import requests
 import webview
@@ -43,6 +47,10 @@ YAHOO_SUMMARY = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}
 YAHOO_CRUMB = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 YAHOO_CHART_Q = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?{query}"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+WALLET_HISTORY_TTL = 600   # 錢包歷史日線快取存活秒數(停留在錢包頁時避免每 120 秒全量重抓)
+
+log = logging.getLogger("stockwallet")
 
 # 臺灣期貨交易所 (TAIFEX) 官方資料源
 #   台股 VIX:每日波動率指數檔 (big5,tab 分隔:日期 / 時間 / VIX / 前一交易日收盤)
@@ -151,6 +159,41 @@ def _file(name):
     return os.path.join(data_dir(), name)
 
 
+def setup_logging():
+    """設定 RotatingFileHandler 到 %APPDATA%/StockWallet/logs/app.log(1MB × 3)。
+
+    冪等(重複呼叫只設定一次),失敗靜默不影響啟動。
+    注意:嚴禁把 API 金鑰或其他機密寫入 log。
+    """
+    if getattr(setup_logging, "_done", False):
+        return
+    setup_logging._done = True
+    try:
+        logdir = os.path.join(data_dir(), "logs")
+        os.makedirs(logdir, exist_ok=True)
+        handler = RotatingFileHandler(
+            os.path.join(logdir, "app.log"),
+            maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"))
+        log.setLevel(logging.INFO)
+        if not log.handlers:
+            log.addHandler(handler)
+    except Exception:
+        pass
+
+
+def format_labels(ts, fmt, gmtoffset=0):
+    """把 UTC 秒數序列依交易所時區偏移格式化為 K 線標籤(純函式)。
+
+    gmtoffset 為 Yahoo meta.gmtoffset(秒)。小時線需以交易所當地時區顯示
+    (台股 09:00 而非 UTC 01:00);日線/月線 fmt 不含時間,偏移不跨日,結果不變。
+    作法比照 _fetch_one 的 _sess_date:utc 秒數 + gmtoffset 後以 UTC 格式化。
+    """
+    off = gmtoffset or 0
+    return [datetime.fromtimestamp(int(t) + off, tz=timezone.utc).strftime(fmt) for t in ts]
+
+
 def normalize_ohlcv(payload):
     """統一 OHLCV 的 None 列處理(純函式,方便測試)。
 
@@ -172,39 +215,128 @@ def normalize_ohlcv(payload):
     return payload
 
 
+def _event_key(e):
+    return (e.get("date"), e.get("type"), e.get("title"), e.get("time"))
+
+
+def merge_events(defaults, custom):
+    """合併內建事件(defaults,隨程式碼更新)與使用者自訂事件(custom,存於檔案),
+    標記 source 欄位並去重(純函式)。
+
+    以 (date,type,title,time) 為鍵;內建優先,與內建重複的自訂項不重複列出。
+    這讓內建事件不再被舊 events.json 快照凍結——它們永遠來自程式碼。
+    """
+    seen, out = set(), []
+    for e in defaults:
+        k = _event_key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**e, "source": "builtin"})
+    for e in (custom or []):
+        k = _event_key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**e, "source": "custom"})
+    return out
+
+
+def migrate_events(old_events, defaults):
+    """把舊 events.json 扁平清單裡「不在內建清單中」的項目挑出來當自訂事件(純函式)。
+
+    以 (date,type,title,time) 比對內建;內建項不搬、重複項去重、移除殘留 source 欄位。
+    """
+    builtin_keys = {_event_key(e) for e in defaults}
+    seen, custom = set(), []
+    for e in (old_events or []):
+        k = _event_key(e)
+        if k in builtin_keys or k in seen:
+            continue
+        seen.add(k)
+        custom.append({kk: vv for kk, vv in e.items() if kk != "source"})
+    return custom
+
+
 class Api:
     """暴露給前端 JS 呼叫的介面 (window.pywebview.api.*)"""
 
     def __init__(self):
         self._ohlcv_cache = {}   # (sym, timeframe) -> (fetched_at, payload)
-        self._session = requests.Session()
+        # requests.Session 非執行緒安全,ThreadPoolExecutor 各執行緒不可共用同一個,
+        # 改用 threading.local() 持有每執行緒專屬的 Session(見 _http)。
+        self._local = threading.local()
         self._crumb = None
+        self._crumb_cookies = None          # 取得 crumb 時的 Yahoo cookies,注入其他執行緒 session
+        self._crumb_lock = threading.Lock()
+        self._history_cache = {}            # symbol -> (fetched_at, series);TTL WALLET_HISTORY_TTL
+        self._history_lock = threading.Lock()
+
+    def _http(self):
+        """回傳當前執行緒專屬的 requests.Session(每執行緒一個,避免共用非執行緒安全物件)。
+        新建 session 會注入取得 crumb 時的 Yahoo cookies,讓財報查詢在工作執行緒也能通過驗證。"""
+        s = getattr(self._local, "session", None)
+        if s is None:
+            s = requests.Session()
+            if self._crumb_cookies is not None:
+                for c in self._crumb_cookies:
+                    s.cookies.set_cookie(copy.copy(c))
+            self._local.session = s
+        return s
+
+    def _invalidate_history_cache(self):
+        """交易新增/刪除/匯入時使錢包歷史日線快取整體失效
+        (最早交易日可能改變,舊快取的序列起點不再涵蓋,必須重抓)。"""
+        with self._history_lock:
+            self._history_cache.clear()
 
     # ---- 事件 ----
-    def get_events(self, market="us"):
+    @staticmethod
+    def _events_conf(market):
+        """回傳 (舊檔名, 自訂檔名, 內建清單)。us / tw 各一組。"""
         if market == "tw":
-            default, fname = DEFAULT_TW_EVENTS, "events_tw.json"
-        else:
-            default, fname = DEFAULT_EVENTS, "events.json"
-        events = default
+            return "events_tw.json", "custom_events_tw.json", DEFAULT_TW_EVENTS
+        return "events.json", "custom_events.json", DEFAULT_EVENTS
+
+    def get_events(self, market="us"):
+        old_name, custom_name, default = self._events_conf(market)
+        self._migrate_events_file(old_name, custom_name, default)   # 首次啟動遷移舊檔(之後為 no-op)
+        custom = self._load(custom_name, [])
+        return {"today": date.today().isoformat(),
+                "events": merge_events(default, custom)}
+
+    def add_event(self, date_str, type_str, title, time_str, impact, market="us"):
+        _, custom_name, _ = self._events_conf(market)
+        custom = self._load(custom_name, [])
+        custom.append({"date": date_str, "type": type_str, "title": title,
+                       "time": time_str, "impact": impact})
+        return self._save(custom_name, custom)
+
+    def delete_event(self, date_str, title, market="us"):
+        # 只允許刪除自訂事件;內建事件不在自訂檔內,filter 後自然保留。
+        _, custom_name, _ = self._events_conf(market)
+        custom = self._load(custom_name, [])
+        custom = [e for e in custom if not (e.get("date") == date_str and e.get("title") == title)]
+        return self._save(custom_name, custom)
+
+    def _migrate_events_file(self, old_name, custom_name, default):
+        """首次啟動遷移:舊 events.json 若存在,把非內建項搬到 custom_events.json,
+        舊檔改名為 .bak。舊檔不存在時直接 no-op(之後每次呼叫都是 no-op)。"""
+        old_path = _file(old_name)
+        if not os.path.exists(old_path):
+            return
         try:
-            p = _file(fname)
-            if os.path.exists(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    events = json.load(f)
+            with open(old_path, "r", encoding="utf-8") as f:
+                old = json.load(f)
         except Exception:
-            events = default
-        return {"today": date.today().isoformat(), "events": events}
-
-    def add_event(self, date_str, type_str, title, time_str, impact):
-        events = self.get_events()["events"]
-        events.append({"date": date_str, "type": type_str, "title": title, "time": time_str, "impact": impact})
-        return self._save("events.json", events)
-
-    def delete_event(self, date_str, title):
-        events = self.get_events()["events"]
-        events = [e for e in events if not (e.get("date") == date_str and e.get("title") == title)]
-        return self._save("events.json", events)
+            old = None
+        # 只在自訂檔尚不存在時才寫入,避免覆蓋使用者已編輯過的自訂事件
+        if old is not None and not os.path.exists(_file(custom_name)):
+            self._save(custom_name, migrate_events(old, default))
+        try:
+            os.replace(old_path, old_path + ".bak")   # os.replace 於 Windows 亦可覆蓋既有 .bak
+        except Exception:
+            pass
 
     # ---- 訊號提醒 ----
     def get_alerts(self):
@@ -279,7 +411,7 @@ class Api:
             last_prev_close = None
             for ym in reversed(yms):
                 try:
-                    r = requests.get(TAIFEX_VIX_FILE.format(ym=ym), timeout=12, headers=HEADERS)
+                    r = self._http().get(TAIFEX_VIX_FILE.format(ym=ym), timeout=12, headers=HEADERS)
                     if r.status_code != 200:
                         continue
                     for line in r.content.decode("big5", "ignore").splitlines():
@@ -304,6 +436,7 @@ class Api:
             else:
                 res["error"] = "no data"
         except Exception as e:
+            log.warning("_taifex_vix failed: %s", e)
             res["error"] = str(e)
         return res
 
@@ -313,8 +446,8 @@ class Api:
         res = {"price": None, "prev": None, "change": None, "changePct": None,
                "spark": [], "error": None}
         try:
-            r = requests.post(TAIFEX_MIS_QUOTE, data=json.dumps({"MarketType": "0", "Objects": ["TXF"]}),
-                              headers=TAIFEX_MIS_HEADERS, timeout=12)
+            r = self._http().post(TAIFEX_MIS_QUOTE, data=json.dumps({"MarketType": "0", "Objects": ["TXF"]}),
+                                  headers=TAIFEX_MIS_HEADERS, timeout=12)
             ql = (r.json().get("RtData", {}) or {}).get("QuoteList", []) or []
             # 近月合約:SymbolID 形如 TXF<月碼A-L><年尾數>-F (非價差、非現貨 -S)
             near = next((q for q in ql if re.match(r"^TXF[A-L]\d-F$", q.get("SymbolID", ""))), None)
@@ -331,6 +464,7 @@ class Api:
             if res["price"] is None:
                 res["error"] = "no price"
         except Exception as e:
+            log.warning("_taifex_txf failed: %s", e)
             res["error"] = str(e)
         return res
 
@@ -338,7 +472,7 @@ class Api:
         res = {"price": None, "prev": None, "change": None, "changePct": None,
                "spark": [], "market_date": None, "prev_date": None, "error": None}
         try:
-            r = requests.get(YAHOO_CHART.format(sym=sym), timeout=12, headers=HEADERS)
+            r = self._http().get(YAHOO_CHART.format(sym=sym), timeout=12, headers=HEADERS)
             r.raise_for_status()
             data = r.json()["chart"]["result"][0]
             meta = data.get("meta", {})
@@ -390,6 +524,7 @@ class Api:
             else:
                 res["error"] = "no data"
         except Exception as e:
+            log.warning("_fetch_one %s failed: %s", sym, e)
             res["error"] = str(e)
         return res
 
@@ -492,16 +627,17 @@ class Api:
             return hit[1]
         payload = {"error": None}
         try:
-            r = self._session.get(
+            r = self._http().get(
                 YAHOO_CHART_Q.format(sym=symbol, query=spec["query"]),
                 timeout=14, headers=HEADERS)
             r.raise_for_status()
             res = r.json()["chart"]["result"][0]
+            meta = res.get("meta", {})
+            gmt = meta.get("gmtoffset", 0) or 0        # 交易所時區偏移(秒),小時線標籤需用
             ts = res.get("timestamp", []) or []
             q = res["indicators"]["quote"][0]
             payload["ts"] = list(ts)
-            payload["labels"] = [
-                datetime.fromtimestamp(t, tz=timezone.utc).strftime(spec["fmt"]) for t in ts]
+            payload["labels"] = format_labels(ts, spec["fmt"], gmt)
             payload["open"] = [self._f(x) for x in q.get("open", [])]
             payload["high"] = [self._f(x) for x in q.get("high", [])]
             payload["low"] = [self._f(x) for x in q.get("low", [])]
@@ -509,6 +645,7 @@ class Api:
             payload["volume"] = [self._f(x) for x in q.get("volume", [])]
             normalize_ohlcv(payload)      # 剔除 close=None 的 bar、volume 補 0
         except Exception as e:
+            log.warning("_ohlcv %s failed: %s", symbol, e)
             payload["error"] = str(e)
         self._ohlcv_cache[key] = (time.time(), payload)
         return payload
@@ -531,8 +668,8 @@ class Api:
 
         def one(sym):
             try:
-                r = self._session.get(YAHOO_SUMMARY.format(sym=sym, crumb=self._crumb),
-                                      timeout=12, headers=HEADERS)
+                r = self._http().get(YAHOO_SUMMARY.format(sym=sym, crumb=self._crumb),
+                                     timeout=12, headers=HEADERS)
                 if r.status_code != 200:
                     return sym, None
                 ce = r.json()["quoteSummary"]["result"][0].get("calendarEvents", {})
@@ -540,8 +677,8 @@ class Api:
                 if ed:
                     return sym, {"date": ed[0].get("fmt"),
                                  "estimate": bool(ce["earnings"].get("isEarningsDateEstimate"))}
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("get_earnings %s failed: %s", sym, e)
             return sym, None
 
         with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as ex:
@@ -553,14 +690,20 @@ class Api:
     def _ensure_crumb(self):
         if self._crumb:
             return True
-        try:
-            self._session.get("https://fc.yahoo.com", timeout=10, headers=HEADERS)
-            crumb = self._session.get(YAHOO_CRUMB, timeout=10, headers=HEADERS).text.strip()
-            if crumb and "<" not in crumb and len(crumb) < 40:
-                self._crumb = crumb
+        with self._crumb_lock:                     # 只讓一條執行緒去抓 crumb,其餘等待後直接複用
+            if self._crumb:
                 return True
-        except Exception:
-            pass
+            try:
+                s = self._http()
+                s.get("https://fc.yahoo.com", timeout=10, headers=HEADERS)
+                crumb = s.get(YAHOO_CRUMB, timeout=10, headers=HEADERS).text.strip()
+                if crumb and "<" not in crumb and len(crumb) < 40:
+                    self._crumb = crumb
+                    # 存下取得 crumb 時的 cookies,供其他工作執行緒的新 session 注入(見 _http)
+                    self._crumb_cookies = [copy.copy(c) for c in s.cookies]
+                    return True
+            except Exception as e:
+                log.warning("_ensure_crumb failed: %s", e)
         return False
 
     # ---- AI 分析設定 ----
@@ -682,6 +825,7 @@ class Api:
                          datetime.now().isoformat(timespec="seconds")))
             finally:
                 conn.close()
+            self._invalidate_history_cache()
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -693,6 +837,7 @@ class Api:
                 conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
         finally:
             conn.close()
+        self._invalidate_history_cache()
         return {"ok": True}
 
     def wallet_holdings(self):
@@ -752,8 +897,13 @@ class Api:
         syms = list({t["symbol"] for t in txs})
 
         def fetch(sym):
+            now = time.time()
+            with self._history_lock:
+                hit = self._history_cache.get(sym)
+            if hit and now - hit[0] < WALLET_HISTORY_TTL:
+                return sym, hit[1]
             try:
-                r = self._session.get(
+                r = self._http().get(
                     YAHOO_CHART_Q.format(sym=sym, query=f"period1={p1}&period2={p2}&interval=1d"),
                     timeout=14, headers=HEADERS)
                 res = r.json()["chart"]["result"][0]
@@ -761,8 +911,11 @@ class Api:
                 closes = res["indicators"]["quote"][0].get("close", []) or []
                 series = [(datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d"), float(c))
                           for t, c in zip(ts, closes) if c is not None]
+                with self._history_lock:
+                    self._history_cache[sym] = (now, series)
                 return sym, series
-            except Exception:
+            except Exception as e:
+                log.warning("wallet_history fetch %s failed: %s", sym, e)
                 return sym, []
 
         prices = {}
@@ -900,6 +1053,7 @@ class Api:
             elif "holdings" in sections and "holdings" in data:
                 self._replace_transactions(None, data.get("holdings"))
                 applied.append("持有標的")
+            self._invalidate_history_cache()   # 交易/持倉被取代,歷史日線快取失效
             return {"ok": True, "applied": applied}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -935,8 +1089,8 @@ class Api:
         if not q:
             return []
         try:
-            r = requests.get(YAHOO_SEARCH.format(q=requests.utils.quote(q)),
-                             timeout=10, headers=HEADERS)
+            r = self._http().get(YAHOO_SEARCH.format(q=requests.utils.quote(q)),
+                                 timeout=10, headers=HEADERS)
             r.raise_for_status()
             out = []
             for it in r.json().get("quotes", []):
@@ -950,7 +1104,8 @@ class Api:
                     "type": it.get("quoteType") or "",
                 })
             return out
-        except Exception:
+        except Exception as e:
+            log.warning("search_symbol %r failed: %s", q, e)
             return []
 
     # ---- 系統通知 ----

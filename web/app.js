@@ -381,7 +381,8 @@ function initAlertForm(){
 }
 function renderFullCalendar(){
   const year=$('#cal-year-sel').value;
-  renderCalendarInto('#full-calendar',STATE.events.concat(earningsEvents()),year);
+  // 跟隨全域市場(與儀表板 renderDashEvents 一致),使自訂事件在對應市場的日曆可見。
+  renderCalendarInto('#full-calendar',activeEvents().concat(earningsEvents()),year);
 }
 function openCalendarToDate(date_str){
   if(!date_str)return;
@@ -401,9 +402,10 @@ function openCalendarToDate(date_str){
 }
 function renderCustomEvents(){
   const box=$('#ce-list');
-  // We consider all events from STATE.events as deletable since they are in events.json
-  const evs=STATE.events;
-  if(!evs.length){box.innerHTML='<div class="empty">目前沒有事件</div>';return;}
+  // 只列出使用者自訂事件(source==='custom');內建事件不可刪除,不列入管理清單。
+  // 跟隨全域市場:美股管美股自訂事件、台股管台股自訂事件。
+  const evs=activeEvents().filter(e=>e.source==='custom');
+  if(!evs.length){box.innerHTML='<div class="empty">目前沒有自訂事件</div>';return;}
   box.innerHTML=evs.map((e,i)=>`
     <div class="txrow" style="padding:4px 8px">
       <span class="badge ${e.type}">${e.type}</span>
@@ -413,13 +415,14 @@ function renderCustomEvents(){
     </div>
   `).join('');
   box.querySelectorAll('[data-delce]').forEach(b=>b.onclick=async()=>{
-    await api().delete_event(b.dataset.cedate,b.dataset.cetitle);
+    await api().delete_event(b.dataset.cedate,b.dataset.cetitle,STATE.market);
     await reloadEvents();
   });
 }
 async function reloadEvents(){
-  const ev=await api().get_events();
-  STATE.events=ev.events;STATE.today=ev.today;
+  // 兩個市場的事件都重載,維持 STATE.events / STATE.twEvents 一致。
+  const ev=await api().get_events('us');STATE.events=ev.events;STATE.today=ev.today;
+  const evtw=await api().get_events('tw');STATE.twEvents=evtw.events;
   renderEvents();renderDashEvents();renderFullCalendar();renderCustomEvents();
 }
 function initCustomEventsForm(){
@@ -440,7 +443,7 @@ function initCustomEventsForm(){
     const d=$('#ce-date').value, t=$('#ce-type').value, title=$('#ce-title').value,
           time=$('#ce-time').value, imp=$('#ce-impact').value;
     if(!d||!title){toast('請填寫日期與事件名稱');return;}
-    const r=await api().add_event(d,t,title,time,imp);
+    const r=await api().add_event(d,t,title,time,imp,STATE.market);
     if(!r.ok){toast('新增失敗');return;}
     toast('已新增事件');$('#ce-title').value='';
     await reloadEvents();
@@ -1266,7 +1269,7 @@ function setMarket(m){
     }
     _syncing=false;
   }
-  renderIndices();renderWatchlist();renderDashEvents();
+  renderIndices();renderWatchlist();renderDashEvents();renderFullCalendar();renderCustomEvents();
   renderGoldPrices();refreshAlertSymbols();renderAlerts();
   // 抓取新市場所需的即時報價與財報日(含黃金)
   const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];

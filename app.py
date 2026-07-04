@@ -7,10 +7,11 @@
 """
 import webview
 
-from api import Api, resource_path
+from api import Api, resource_path, setup_logging
 
 
 def main():
+    setup_logging()   # 啟動時設定 RotatingFileHandler 日誌(見 api.setup_logging)
     webview.create_window(
         "Stock Wallet",
         url=resource_path("web/index.html"),
