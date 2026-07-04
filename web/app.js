@@ -359,6 +359,7 @@ async function addWatch(sym,name){
   const wl=currentWL(),gid=(STATE.wlGroup&&STATE.wlGroup!=='all')?STATE.wlGroup:'default';
   const g=wl.groups.find(x=>x.id===gid)||wl.groups.find(x=>x.id==='default');
   g.items.push({sym,name:name||sym});saveWL();
+  api().set_quote_symbols(quoteSymbols());   // 讓背景刷新器納入新標的
   renderWatchlist();toast(`已加入 ${sym}`);
   const q=await api().get_quotes([sym]);Object.assign(STATE.quotes,q);renderWatchlist();
   refreshEarnings();
@@ -367,7 +368,8 @@ function removeWatch(sym){
   const wl=currentWL();
   wl.groups.forEach(g=>{g.items=(g.items||[]).filter(it=>it.sym!==sym);});
   delete STATE.earnings[sym];
-  saveWL();renderWatchlist();renderDashEvents();renderFullCalendar();
+  saveWL();api().set_quote_symbols(quoteSymbols());
+  renderWatchlist();renderDashEvents();renderFullCalendar();
 }
 
 /* ---------- search ---------- */
@@ -1364,19 +1366,30 @@ async function refreshEarnings(){
   if(!syms.length){STATE.earnings={};renderDashEvents();renderFullCalendar();return;}
   api().get_earnings(syms).then(res=>{STATE.earnings=res;renderDashEvents();renderFullCalendar();});
 }
+// 目前需要追蹤的報價標的(大盤 + 黃金 + 觀察名單,合併去重)。
+function quoteSymbols(){return [...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];}
+// 報價背景推送:後端抓好寫入快取後以 evaluate_js 呼叫本函式;前端只讀快取渲染(永不等網路)。
+window.onQuotesPush=async function(){
+  snapshotPrices();
+  let q;try{q=await api().get_quotes_cached();}catch(e){q=null;}
+  if(q)STATE.quotes=q;
+  renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();flashTicks();
+  if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
+  if(STATE.page==='wallet'&&!STATE.wallet.loading)loadWallet();
+  const t=new Date();
+  $('#updated').innerHTML=`延遲報價 · 更新<br>${t.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+  _refreshDone();
+};
+let _refreshPending=false,_refreshSafety=null;
+function _refreshDone(){_refreshPending=false;clearTimeout(_refreshSafety);const icon=$('#ricon');if(icon)icon.classList.remove('spin');$('#refresh').disabled=false;}
+// 手動 ↻ / 市場切換:更新後端追蹤標的並要求立即刷新(不阻塞 UI,渲染由 onQuotesPush 收尾)。重入防護。
 async function refreshAll(){
-  const icon=$('#ricon');icon.classList.add('spin');$('#refresh').disabled=true;
-  try{
-    snapshotPrices();
-    const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];
-    STATE.quotes=await api().get_quotes(syms);
-    renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();flashTicks();
-    if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
-    if(STATE.page==='wallet'&&!STATE.wallet.loading)loadWallet();
-    const t=new Date();
-    $('#updated').innerHTML=`延遲報價 · 更新<br>${t.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
-  }catch(e){toast('報價更新失敗');}
-  finally{icon.classList.remove('spin');$('#refresh').disabled=false;}
+  if(_refreshPending)return;
+  _refreshPending=true;
+  const icon=$('#ricon');if(icon)icon.classList.add('spin');$('#refresh').disabled=true;
+  clearTimeout(_refreshSafety);_refreshSafety=setTimeout(_refreshDone,8000);   // 推播萬一沒到的保險
+  try{await api().set_quote_symbols(quoteSymbols());await api().request_refresh_now();}
+  catch(e){_refreshDone();}
 }
 
 function initSidebar(){
@@ -1418,9 +1431,8 @@ function setMarket(m){
   }
   renderIndices();renderWatchlist();renderDashEvents();renderFullCalendar();renderCustomEvents();
   renderGoldPrices();refreshAlertSymbols();renderAlerts();
-  // 抓取新市場所需的即時報價與財報日(含黃金)
-  const syms=[...new Set([...activeIndices().map(i=>i.sym),...GOLD_SYMS,...activeWatchlist().map(w=>w.sym)])];
-  api().get_quotes(syms).then(q=>{Object.assign(STATE.quotes,q);renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();});
+  // 更新背景刷新器追蹤的新市場標的並立即刷新(報價由 onQuotesPush 推回渲染),不阻塞 UI
+  api().set_quote_symbols(quoteSymbols());api().request_refresh_now();
   refreshEarnings();
 }
 function initMarketSwitch(){
@@ -1509,8 +1521,9 @@ function boot(){
     if(card&&!e.target.closest('.rm')){e.preventDefault();openDetail(card.dataset.open,card.dataset.name);}
   });
   renderIndices();renderGoldPrices();
+  // 初次載入後啟動背景報價推送(set_quote_symbols 會 lazy 啟動後端 QuoteRefresher);
+  // 週期性刷新(每 120 秒)由後端排程,不再用前端 setInterval。
   loadStatic().then(refreshAll);
-  setInterval(refreshAll,120000);
 }
 if(window.pywebview) boot();
 else window.addEventListener('pywebviewready',boot);

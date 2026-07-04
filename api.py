@@ -251,6 +251,67 @@ def migrate_watchlist(data):
     return {"version": 2, "groups": out_groups}
 
 
+class QuoteRefresher(threading.Thread):
+    """背景報價刷新器(daemon 執行緒)。
+
+    UI 永不等網路:前端只讀快取(get_cache);抓取在此單一執行緒序列化,
+    因此更新永不重疊。標的變更(set_symbols)或要求立即刷新(request_now)會喚醒
+    執行緒立刻抓一輪,否則每 interval 秒抓一次。每輪抓取後呼叫 notify 推播前端。
+
+    fetch(symbols)->dict 與 notify() 皆由外部注入(方便單元測試;正式使用時
+    fetch=Api.get_quotes,notify=推播 evaluate_js)。
+    """
+
+    def __init__(self, fetch, notify, interval=120):
+        super().__init__(daemon=True)
+        self._fetch = fetch
+        self._notify = notify
+        self._interval = interval
+        self._symbols = []
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._wake = threading.Event()   # 標的變更 / 立即刷新時 set
+        self._stop = threading.Event()
+
+    def set_symbols(self, symbols):
+        with self._lock:
+            self._symbols = list(dict.fromkeys(symbols or []))   # 去重、保序
+        self._wake.set()
+
+    def request_now(self):
+        self._wake.set()
+
+    def get_cache(self):
+        with self._lock:
+            return dict(self._cache)
+
+    def stop(self):
+        self._stop.set()
+        self._wake.set()
+
+    def run(self):
+        while not self._stop.is_set():
+            # 等到 interval 到期,或被 set_symbols/request_now 提前喚醒(clear 於抓取前,
+            # 抓取期間新來的 wake 會保留到下一輪 wait,不會遺失喚醒)。
+            self._wake.wait(self._interval)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            with self._lock:
+                syms = list(self._symbols)
+            if not syms:
+                continue
+            try:
+                quotes = self._fetch(syms)
+            except Exception as e:
+                log.warning("QuoteRefresher fetch failed: %s", e)
+                quotes = None
+            if quotes:
+                with self._lock:
+                    self._cache.update(quotes)
+            self._notify()   # 每輪抓取後通知(即使失敗),讓前端解除等待並渲染最新快取
+
+
 def _event_key(e):
     return (e.get("date"), e.get("type"), e.get("title"), e.get("time"))
 
@@ -307,6 +368,7 @@ class Api:
         self._crumb_lock = threading.Lock()
         self._history_cache = {}            # symbol -> (fetched_at, series);TTL WALLET_HISTORY_TTL
         self._history_lock = threading.Lock()
+        self._refresher = None              # QuoteRefresher(背景報價推送),首次呼叫時 lazy 啟動
 
     def _http(self):
         """回傳當前執行緒專屬的 requests.Session(每執行緒一個,避免共用非執行緒安全物件)。
@@ -431,6 +493,38 @@ class Api:
             for f in as_completed(futs):
                 out[futs[f]] = f.result()
         return out
+
+    # ---- 背景報價推送(QuoteRefresher)----
+    def _ensure_refresher(self):
+        """首次呼叫時 lazy 啟動背景刷新器。此時前端已呼叫過 js_api,視窗必然存在,
+        故之後的 evaluate_js 推播不會早於視窗建立。"""
+        if self._refresher is None:
+            self._refresher = QuoteRefresher(self.get_quotes, self._push_quotes)
+            self._refresher.start()
+        return self._refresher
+
+    def _push_quotes(self):
+        """通知前端有新報價(呼叫 window.onQuotesPush)。視窗未就緒/已關則靜默忽略。"""
+        try:
+            wins = getattr(webview, "windows", None)
+            if wins:
+                wins[0].evaluate_js("window.onQuotesPush&&window.onQuotesPush()")
+        except Exception as e:
+            log.debug("push_quotes failed: %s", e)
+
+    def set_quote_symbols(self, symbols):
+        """前端設定要追蹤的報價標的;變更會觸發背景立即刷新一輪。"""
+        self._ensure_refresher().set_symbols(symbols or [])
+        return {"ok": True}
+
+    def request_refresh_now(self):
+        """前端要求立即刷新(手動 ↻)。"""
+        self._ensure_refresher().request_now()
+        return {"ok": True}
+
+    def get_quotes_cached(self):
+        """前端即讀報價快取(不打網路)。刷新器尚未啟動時回空 dict。"""
+        return self._refresher.get_cache() if self._refresher else {}
 
     # ---- TAIFEX 官方資料源 (台股 VIX / 台指期) ----
     @staticmethod
