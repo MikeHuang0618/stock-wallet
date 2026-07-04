@@ -65,7 +65,7 @@ const PAGE_META={
 const PIE_COLORS=['#e8c37a','#5bc0de','#c792ea','#38d39f','#ffb454','#ff6b6b','#7ec8ff','#f0a3c8','#a0e57a','#c0c4d0'];
 
 let STATE={events:[],twEvents:[],today:null,quotes:{},alerts:[],
-  market:'us',watchlists:{us:[],tw:[]},earnings:{},wlView:'cards',
+  market:'us',watchlists:{us:[],tw:[]},earnings:{},wlView:'cards',wlGroup:'all',
   palette:{open:false,items:[],base:[],sel:0,q:'',timer:null},
   page:'dashboard',prevPage:'dashboard',firing:new Set(),
   aicfg:{provider:'none',prompt:'',keys:{},models:{}},
@@ -74,7 +74,30 @@ let STATE={events:[],twEvents:[],today:null,quotes:{},alerts:[],
     chartType:'line',custom:false,start:'',end:'',data:null,loading:false,charts:[]}};
 
 /* 依目前選擇的市場 (美股 / 台股) 取用對應資料 */
-function activeWatchlist(){return STATE.watchlists[STATE.market]||[];}
+// 把 v2 群組結構(或舊扁平陣列)攤平成去重的扁平陣列。
+function flattenWatchlist(wl){
+  if(!wl)return [];
+  if(Array.isArray(wl))return wl;
+  const seen=new Set(),out=[];
+  (wl.groups||[]).forEach(g=>(g.items||[]).forEach(it=>{if(it&&it.sym&&!seen.has(it.sym)){seen.add(it.sym);out.push(it);}}));
+  return out;
+}
+// 扁平陣列(合併所有群組、去重)——維持既有呼叫點(報價/財報/palette/alerts)不變。
+function activeWatchlist(){return flattenWatchlist(STATE.watchlists[STATE.market]);}
+// v2 群組陣列(供群組 tabs 與管理 modal 渲染)。
+function activeWatchlistGrouped(){
+  const wl=STATE.watchlists[STATE.market];
+  if(!wl||Array.isArray(wl))return [{id:'default',name:'預設',items:Array.isArray(wl)?wl:[]}];
+  return wl.groups||[];
+}
+// 取當前市場的 v2 結構(必要時就地升級並補預設群組),供變更操作使用。
+function currentWL(){
+  let wl=STATE.watchlists[STATE.market];
+  if(!wl||Array.isArray(wl)){wl={version:2,groups:[{id:'default',name:'預設',items:Array.isArray(wl)?wl:[]}]};STATE.watchlists[STATE.market]=wl;}
+  if(!wl.groups.some(g=>g.id==='default'))wl.groups.unshift({id:'default',name:'預設',items:[]});
+  return wl;
+}
+function saveWL(){api().save_watchlist(STATE.watchlists[STATE.market],STATE.market);}
 function activeEvents(){return STATE.market==='tw'?STATE.twEvents:STATE.events;}
 
 /* ---------- utils ---------- */
@@ -228,11 +251,38 @@ function heatTile(w){
     <div class="hm-sym">${esc(w.sym)}</div>
     <div class="hm-pct">${pct==null?'—':(pct>=0?'+':'')+fmt(pct)+'%'}</div></div>`;
 }
+function renderWlTabs(){
+  const tabs=$('#wl-tabs');if(!tabs)return;
+  const groups=activeWatchlistGrouped();
+  // 選中的群組在此市場不存在時退回「全部」(群組 id 為各市場專屬)
+  let sel=STATE.wlGroup||'all';
+  if(sel!=='all'&&!groups.some(g=>g.id===sel)){sel='all';STATE.wlGroup='all';}
+  let html=`<button class="wl-tab${sel==='all'?' on':''}" data-g="all">全部</button>`;
+  html+=groups.map(g=>`<button class="wl-tab${sel===g.id?' on':''}" data-g="${esc(g.id)}">${esc(g.name)} <span class="wl-tn">${(g.items||[]).length}</span></button>`).join('');
+  html+=`<button class="wl-tab wl-manage" data-g="__manage" title="管理群組">⚙</button>`;
+  tabs.innerHTML=html;
+  tabs.querySelectorAll('.wl-tab').forEach(b=>b.onclick=()=>{
+    const g=b.dataset.g;
+    if(g==='__manage')openWlgModal();else setWlGroup(g);
+  });
+}
+function setWlGroup(id){
+  STATE.wlGroup=id;try{localStorage.setItem('wlGroup',id);}catch(e){}
+  renderWatchlist();
+}
+// 依選中 tab 決定顯示的清單:「全部」= 合併去重;群組 = 該群組 items。
+function watchlistForView(){
+  const sel=STATE.wlGroup||'all';
+  if(sel==='all')return activeWatchlist();
+  const g=activeWatchlistGrouped().find(x=>x.id===sel);
+  return g?(g.items||[]):activeWatchlist();
+}
 function renderWatchlist(){
-  const wl=activeWatchlist();
+  renderWlTabs();
+  const wl=watchlistForView();
   $('#wl-count').textContent=`${wl.length} 檔`;
   const box=$('#watchlist');
-  if(!wl.length){box.className='qgrid';box.innerHTML='<div class="empty">觀察名單是空的 · 用上方搜尋框加入標的</div>';return;}
+  if(!wl.length){box.className='qgrid';box.innerHTML=`<div class="empty">${STATE.wlGroup==='all'?'觀察名單是空的':'此群組是空的'} · 用上方搜尋框加入標的</div>`;return;}
   if(STATE.wlView==='heatmap'){
     box.className='heatmap';
     box.innerHTML=wl.map(heatTile).join('');
@@ -243,8 +293,58 @@ function renderWatchlist(){
     box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.rm));
   }
 }
+// ---- 群組變更操作(就地改 v2 結構並存檔)----
+function addGroup(name){
+  const wl=currentWL(),id='g'+Date.now().toString(36)+Math.floor(Math.random()*1e3);
+  wl.groups.push({id,name:name||'新群組',items:[]});saveWL();
+}
+function renameGroup(id,name){
+  const g=currentWL().groups.find(x=>x.id===id);
+  if(g){g.name=name;saveWL();renderWatchlist();}
+}
+function deleteGroup(id){
+  if(id==='default')return;                 // 預設群組不可刪
+  const wl=currentWL(),g=wl.groups.find(x=>x.id===id);if(!g)return;
+  const def=wl.groups.find(x=>x.id==='default');
+  (g.items||[]).forEach(it=>{if(!def.items.some(d=>d.sym===it.sym))def.items.push(it);});  // items 併回預設
+  wl.groups=wl.groups.filter(x=>x.id!==id);
+  if(STATE.wlGroup===id)setWlGroup('all');
+  saveWL();
+}
+function moveSymbol(sym,toId){
+  const wl=currentWL();let item=null;
+  wl.groups.forEach(g=>{const i=(g.items||[]).findIndex(it=>it.sym===sym);if(i>=0){item=g.items[i];g.items.splice(i,1);}});
+  if(!item)return;
+  (wl.groups.find(x=>x.id===toId)||wl.groups.find(x=>x.id==='default')).items.push(item);saveWL();
+}
+// ---- 群組管理 modal ----
+function renderWlgModal(){
+  const groups=currentWL().groups,box=$('#wlg-list');
+  box.innerHTML=groups.map(g=>{
+    const isDef=g.id==='default';
+    const items=(g.items||[]).map(it=>{
+      const opts=groups.filter(x=>x.id!==g.id).map(x=>`<option value="${esc(x.id)}">移到 ${esc(x.name)}</option>`).join('');
+      return `<div class="wlg-item"><span class="wlg-sym">${esc(it.sym)}</span><span class="wlg-nm">${esc(it.name||'')}</span>${opts?`<select class="wlg-move" data-sym="${esc(it.sym)}"><option value="">移到…</option>${opts}</select>`:''}</div>`;
+    }).join('')||'<div class="wlg-empty">(空)</div>';
+    return `<div class="wlg-group"><div class="wlg-ghead">
+      <input class="wlg-gname" data-gid="${esc(g.id)}" value="${esc(g.name)}" maxlength="20"${isDef?' disabled':''}>
+      ${isDef?'<span class="wlg-deftag">預設</span>':`<button class="wlg-del" data-gid="${esc(g.id)}">🗑</button>`}
+    </div><div class="wlg-items">${items}</div></div>`;
+  }).join('');
+  box.querySelectorAll('.wlg-gname').forEach(inp=>inp.onchange=()=>renameGroup(inp.dataset.gid,inp.value.trim()||'群組'));
+  box.querySelectorAll('.wlg-del').forEach(b=>b.onclick=()=>{deleteGroup(b.dataset.gid);renderWlgModal();renderWatchlist();});
+  box.querySelectorAll('.wlg-move').forEach(sel=>sel.onchange=()=>{if(sel.value){moveSymbol(sel.dataset.sym,sel.value);renderWlgModal();renderWatchlist();}});
+}
+function openWlgModal(){renderWlgModal();$('#wlg-modal').classList.add('show');}
+function closeWlgModal(){$('#wlg-modal').classList.remove('show');}
 function initWatchlistView(){
   STATE.wlView=localStorage.getItem('wlView')==='heatmap'?'heatmap':'cards';
+  STATE.wlGroup=localStorage.getItem('wlGroup')||'all';
+  // 群組管理 modal 綁定(新增/關閉/背景/Esc)
+  $('#wlg-add').onclick=()=>{const n=$('#wlg-new-name').value.trim();if(!n){toast('請輸入群組名稱');return;}addGroup(n);$('#wlg-new-name').value='';renderWlgModal();renderWatchlist();};
+  $('#wlg-close').onclick=closeWlgModal;
+  $('#wlg-modal').onclick=e=>{if(e.target.id==='wlg-modal')closeWlgModal();};
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#wlg-modal').classList.contains('show'))closeWlgModal();});
   const sw=$('#wl-view');if(!sw)return;
   sw.querySelectorAll('button').forEach(b=>{
     b.classList.toggle('on',b.dataset.v===STATE.wlView);
@@ -254,17 +354,20 @@ function initWatchlistView(){
   });
 }
 async function addWatch(sym,name){
-  const wl=activeWatchlist();
-  if(wl.some(w=>w.sym===sym)){toast(`${sym} 已在觀察名單`);return;}
-  wl.push({sym,name});api().save_watchlist(wl,STATE.market);
+  if(activeWatchlist().some(w=>w.sym===sym)){toast(`${sym} 已在觀察名單`);return;}
+  // 加入目前選中的群組(「全部」時進預設群組)
+  const wl=currentWL(),gid=(STATE.wlGroup&&STATE.wlGroup!=='all')?STATE.wlGroup:'default';
+  const g=wl.groups.find(x=>x.id===gid)||wl.groups.find(x=>x.id==='default');
+  g.items.push({sym,name:name||sym});saveWL();
   renderWatchlist();toast(`已加入 ${sym}`);
   const q=await api().get_quotes([sym]);Object.assign(STATE.quotes,q);renderWatchlist();
   refreshEarnings();
 }
 function removeWatch(sym){
-  STATE.watchlists[STATE.market]=activeWatchlist().filter(w=>w.sym!==sym);
+  const wl=currentWL();
+  wl.groups.forEach(g=>{g.items=(g.items||[]).filter(it=>it.sym!==sym);});
   delete STATE.earnings[sym];
-  api().save_watchlist(activeWatchlist(),STATE.market);renderWatchlist();renderDashEvents();renderFullCalendar();
+  saveWL();renderWatchlist();renderDashEvents();renderFullCalendar();
 }
 
 /* ---------- search ---------- */
@@ -1334,8 +1437,8 @@ const PALETTE_PAGES=[
 function paletteLocalSymbols(){
   const seen=new Set(),out=[];
   const add=(sym,name)=>{if(sym&&!seen.has(sym)){seen.add(sym);out.push({sym,name:name||sym});}};
-  (STATE.watchlists.us||[]).forEach(w=>add(w.sym,w.name));
-  (STATE.watchlists.tw||[]).forEach(w=>add(w.sym,w.name));
+  flattenWatchlist(STATE.watchlists.us).forEach(w=>add(w.sym,w.name));
+  flattenWatchlist(STATE.watchlists.tw).forEach(w=>add(w.sym,w.name));
   [...GOLD_US,...GOLD_TW].forEach(g=>add(g.sym,g.name));
   return out;
 }

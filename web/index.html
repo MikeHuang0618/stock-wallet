@@ -59,6 +59,7 @@
           <input id="search" type="text" placeholder="輸入英文代號或股票代碼查詢 (例如 AAPL、NVDA、2330.TW、7203.T) 後加入觀察名單" autocomplete="off">
           <div class="results" id="results"></div>
         </div>
+        <div class="wl-tabs" id="wl-tabs"></div>
         <div class="qgrid" id="watchlist"></div>
 
         <div class="spacer"></div>
@@ -394,6 +395,21 @@
     <div class="modal-actions">
       <button class="btn" id="ai-modal-cancel">取消</button>
       <button class="btn gold" id="ai-modal-save">儲存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="wlg-modal">
+  <div class="modal">
+    <h3>觀察名單群組管理</h3>
+    <div class="msub">新增 / 改名 / 刪除群組;刪除群組時其標的會併回「預設」。可用下拉將標的移到其他群組。</div>
+    <div id="wlg-list"></div>
+    <div class="wlg-addrow">
+      <input id="wlg-new-name" type="text" placeholder="新群組名稱" autocomplete="off" maxlength="20">
+      <button class="btn gold" id="wlg-add">＋ 新增群組</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="wlg-close">關閉</button>
     </div>
   </div>
 </div>

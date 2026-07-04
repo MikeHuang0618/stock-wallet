@@ -215,6 +215,42 @@ def normalize_ohlcv(payload):
     return payload
 
 
+WATCHLIST_DEFAULT_GROUP = "default"
+
+
+def migrate_watchlist(data):
+    """把觀察名單資料正規化為 v2 群組結構(純函式)。
+
+    v2 結構:{"version":2,"groups":[{"id","name","items":[{sym,name}]}]}。
+    - v1(扁平陣列 [{sym,name}])→ 單一「預設」群組;
+    - v2 → 原樣(仍會正規化 items 並去重);
+    - 空 / None / 非預期型別 → 空的預設群組。
+    sym 全域去重(跨群組保留第一次出現);永遠保證存在 id="default" 的預設群組
+    (供刪除群組時把 items 併回)。
+    """
+    if isinstance(data, dict) and data.get("version") == 2 and isinstance(data.get("groups"), list):
+        groups = data["groups"]
+    elif isinstance(data, list):
+        groups = [{"id": WATCHLIST_DEFAULT_GROUP, "name": "預設", "items": data}]
+    else:
+        groups = []
+    seen, out_groups, has_default = set(), [], False
+    for g in groups:
+        gid = g.get("id") or WATCHLIST_DEFAULT_GROUP
+        has_default = has_default or gid == WATCHLIST_DEFAULT_GROUP
+        items = []
+        for it in (g.get("items") or []):
+            sym = it.get("sym")
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            items.append({"sym": sym, "name": it.get("name") or sym})
+        out_groups.append({"id": gid, "name": g.get("name") or "預設", "items": items})
+    if not has_default:
+        out_groups.insert(0, {"id": WATCHLIST_DEFAULT_GROUP, "name": "預設", "items": []})
+    return {"version": 2, "groups": out_groups}
+
+
 def _event_key(e):
     return (e.get("date"), e.get("type"), e.get("title"), e.get("time"))
 
@@ -347,13 +383,19 @@ class Api:
 
     # ---- 觀察名單 ----
     def get_watchlist(self, market="us"):
-        if market == "tw":
-            return self._load("watchlist_tw.json", DEFAULT_TW_WATCHLIST)
-        return self._load("watchlist.json", DEFAULT_WATCHLIST)
+        fname = "watchlist_tw.json" if market == "tw" else "watchlist.json"
+        default = DEFAULT_TW_WATCHLIST if market == "tw" else DEFAULT_WATCHLIST
+        raw = self._load(fname, default)
+        data = migrate_watchlist(raw)
+        # 舊 v1 檔或預設清單:遷移後寫回 v2(已是 v2 則不重寫,避免無謂 I/O)
+        if not (isinstance(raw, dict) and raw.get("version") == 2):
+            self._save(fname, data)
+        return data
 
     def save_watchlist(self, wl, market="us"):
+        # 接受 v2 結構或舊扁平陣列,一律正規化為 v2 後存檔
         fname = "watchlist_tw.json" if market == "tw" else "watchlist.json"
-        return self._save(fname, wl)
+        return self._save(fname, migrate_watchlist(wl))
 
     def _load(self, name, default):
         try:

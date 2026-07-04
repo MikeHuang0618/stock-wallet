@@ -353,6 +353,29 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .rpnl-row .rp-val{font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto}
 .rpnl-row .rp-val.up{color:var(--up)} .rpnl-row .rp-val.down{color:var(--down)}
 .rp-closed{margin-left:6px;font-size:10px;padding:1px 6px;border-radius:6px;background:var(--panel-brd);color:var(--muted)}
+/* 觀察名單群組 tabs */
+.wl-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px}
+.wl-tab{background:rgba(255,255,255,.04);border:1px solid var(--panel-brd);color:var(--muted);border-radius:9px;padding:4px 11px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px}
+.wl-tab:hover{color:var(--ink)}
+.wl-tab.on{background:rgba(232,195,122,.14);border-color:rgba(232,195,122,.5);color:var(--ink)}
+.wl-tab .wl-tn{font-size:10px;color:var(--muted);background:rgba(255,255,255,.06);border-radius:6px;padding:0 5px}
+.wl-tab.wl-manage{margin-left:auto;padding:4px 9px}
+/* 群組管理 modal */
+.wlg-group{border:1px solid var(--panel-brd);border-radius:12px;padding:10px 12px;margin-bottom:10px}
+.wlg-ghead{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.wlg-gname{flex:1;background:rgba(255,255,255,.04);border:1px solid var(--panel-brd);color:var(--ink);border-radius:8px;padding:5px 9px;font-weight:700}
+.wlg-gname:disabled{opacity:.7}
+.wlg-deftag{font-size:10px;color:var(--muted);padding:2px 8px;border-radius:6px;background:var(--panel-brd)}
+.wlg-del{background:none;border:none;cursor:pointer;font-size:14px;padding:3px 7px;border-radius:7px}
+.wlg-del:hover{background:rgba(255,107,107,.12)}
+.wlg-items{display:flex;flex-direction:column;gap:4px}
+.wlg-item{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.wlg-item .wlg-sym{font-weight:800;min-width:60px}
+.wlg-item .wlg-nm{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wlg-move{background:rgba(255,255,255,.04);border:1px solid var(--panel-brd);color:var(--ink);border-radius:7px;padding:2px 6px;font-size:11px}
+.wlg-empty{color:var(--muted);font-size:11.5px;padding:2px 0}
+.wlg-addrow{display:flex;gap:8px;margin-top:6px}
+.wlg-addrow input{flex:1;background:rgba(255,255,255,.04);border:1px solid var(--panel-brd);color:var(--ink);border-radius:8px;padding:7px 10px}
 
 /* AI badge in detail header */
 .d-aibadge{display:none;align-items:center;gap:8px;padding:8px 14px;border-radius:12px;font-size:13px;font-weight:700;
