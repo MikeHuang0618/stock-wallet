@@ -376,6 +376,8 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .txrow .g{color:var(--muted);font-variant-numeric:tabular-nums}
 .txrow .del{margin-left:auto;cursor:pointer;color:var(--muted);font-size:14px;padding:3px 8px;border-radius:7px}
 .txrow .del:hover{color:var(--down);background:rgba(255,107,107,.1)}
+/* 兩段式刪除:第一次點擊進入「確認刪除?」武裝狀態(紅底),3 秒後自動還原 */
+.del.confirm,.del.confirm:hover{color:#fff;background:var(--down);font-weight:700}
 /* 中段:左「持股比例」(較窄) + 右「目前持倉」(較寬,可捲動) */
 .wallet-mid{display:grid;grid-template-columns:minmax(0,0.8fr) minmax(0,1.2fr);gap:20px;align-items:start}
 .wallet-mid>.panel{display:flex;flex-direction:column;min-height:0}

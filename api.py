@@ -151,6 +151,27 @@ def _file(name):
     return os.path.join(data_dir(), name)
 
 
+def normalize_ohlcv(payload):
+    """統一 OHLCV 的 None 列處理(純函式,方便測試)。
+
+    Yahoo 序列常含 None:停牌造成的中段 None、正在形成的當日 bar 尾端 None,
+    或 close 有值但 volume 缺失。策略:
+      - close 為 None 的 bar 整列剔除(ts/labels/open/high/low/close/volume 同步對齊刪除);
+      - close 存在但 volume 為 None 時,volume 補 0。
+    這讓 rsi / obv 等指標不會因單一 None 整條變成 None。
+    有 error 或缺 close 欄位的 payload 原樣返回。
+    """
+    if payload.get("error") or "close" not in payload:
+        return payload
+    keep = [i for i, c in enumerate(payload["close"]) if c is not None]
+    for k in ("ts", "labels", "open", "high", "low", "close", "volume"):
+        arr = payload.get(k)
+        if isinstance(arr, list):
+            payload[k] = [arr[i] for i in keep if i < len(arr)]
+    payload["volume"] = [0 if v is None else v for v in payload.get("volume", [])]
+    return payload
+
+
 class Api:
     """暴露給前端 JS 呼叫的介面 (window.pywebview.api.*)"""
 
@@ -486,6 +507,7 @@ class Api:
             payload["low"] = [self._f(x) for x in q.get("low", [])]
             payload["close"] = [self._f(x) for x in q.get("close", [])]
             payload["volume"] = [self._f(x) for x in q.get("volume", [])]
+            normalize_ohlcv(payload)      # 剔除 close=None 的 bar、volume 補 0
         except Exception as e:
             payload["error"] = str(e)
         self._ohlcv_cache[key] = (time.time(), payload)

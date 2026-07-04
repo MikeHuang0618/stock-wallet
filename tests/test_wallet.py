@@ -42,6 +42,22 @@ def test_multiple_symbols():
     assert syms == {"AAPL", "NVDA"}
 
 
+# ---------- 碎股數量精度 (round 8) ----------
+def test_fractional_share_qty_precision():
+    """碎股/加密貨幣數量:買入 1.23456789 股,彙總須保留至 8 位小數,不被捨到 6 位。"""
+    txs = [tx(1, "BTC", 1.23456789, 30000, "2026-01-01")]
+    result = w.aggregate_holdings(txs)
+    assert result["holdings"][0]["qty"] == A(1.23456789, abs=1e-8)
+
+
+def test_fractional_share_qty_sum():
+    """分兩筆買入 0.12345678 + 0.11111111,加總精度須正確(不因彙總捨位失真)。"""
+    txs = [tx(1, "ETH", 0.12345678, 2000, "2026-01-01"),
+           tx(2, "ETH", 0.11111111, 2100, "2026-01-02")]
+    result = w.aggregate_holdings(txs)
+    assert result["holdings"][0]["qty"] == A(0.23456789, abs=1e-8)
+
+
 # ---------- realized P&L ----------
 def test_realized_pnl_partial_sell():
     """賣 4 股 @130, 成本 100 → 已實現 (130-100)*4 = 120"""

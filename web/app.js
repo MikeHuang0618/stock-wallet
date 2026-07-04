@@ -660,15 +660,17 @@ function syncDetailControls(){
   });
 }
 async function loadDetail(){
-  const d=STATE.detail;if(!d.sym)return;syncDetailControls();hideCross();
+  const d=STATE.detail;if(!d.sym)return;const sym=d.sym;syncDetailControls();hideCross();
   d.loading=true;$('#d-price-chart').innerHTML='<div class="chart-msg">載入中…</div>';
   const panels=d.panels.filter(Boolean);
   const st=d.custom?d.start:null,en=d.custom?d.end:null;
   let data;
   try{data=await api().get_chart_detail(d.sym,d.timeframe,d.overlays.slice(),panels,st,en);}
   catch(e){data={error:String(e)};}
+  // STATE.detail 是同一參照(openDetail 就地改 .sym),必須比對進入時擷取的 sym 字串,
+  // 否則快速切換標的時,舊標的的慢回應會覆蓋新標的畫面。
+  if(STATE.detail.sym!==sym)return; // 已切換到別的標的,丟棄這個過期回應
   d.data=data;d.loading=false;
-  if(STATE.detail.sym!==d.sym)return; // guard against race
   renderDetail();
   if(STATE.detail.autoAi){STATE.detail.autoAi=false;maybeAutoAi();}
 }
@@ -762,13 +764,27 @@ async function loadWallet(){
 }
 function money(n,ccy,dec){
   if(n==null||isNaN(n))return'—';
-  const s=ccy==='TWD'?'NT$':'$',d=dec!=null?dec:(ccy==='TWD'?0:2);
+  // 台股 tick 最小 0.01,TWD 顯示與 USD 一致取 2 位;呼叫端可用 dec 覆寫。
+  const s=ccy==='TWD'?'NT$':'$',d=dec!=null?dec:2;
   return s+Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 }
 function signMoney(n,ccy){
   if(n==null||isNaN(n))return'—';
-  const s=ccy==='TWD'?'NT$':'$',d=ccy==='TWD'?0:2;
+  const s=ccy==='TWD'?'NT$':'$',d=2;
   return (n>=0?'+':'-')+s+Number(Math.abs(n)).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+}
+// 碎股數量:最多 6 位小數、去尾零(券商碎股 5-6 位),整數不顯示小數點。
+function qtyFmt(n){if(n==null||isNaN(n))return'—';return Number(n).toLocaleString('en-US',{maximumFractionDigits:6,minimumFractionDigits:0});}
+// 兩段式刪除確認:首次點擊只把按鈕變成「確認刪除?」(紅色,3 秒後自動還原),
+// 再點一次才真正執行 onConfirm。避免單擊即永久刪除(不用 window.confirm)。
+function armDelete(btn,onConfirm){
+  if(btn.dataset.armed){clearTimeout(+btn.dataset.armT);delete btn.dataset.armed;onConfirm();return;}
+  const orig=btn.textContent;
+  btn.dataset.armed='1';btn.classList.add('confirm');btn.textContent='確認刪除?';
+  btn.dataset.armT=String(setTimeout(()=>{
+    if(!btn.isConnected)return;
+    delete btn.dataset.armed;btn.classList.remove('confirm');btn.textContent=orig;
+  },3000));
 }
 const _dcls=v=>v>0?'up':v<0?'down':'flat',_arr=v=>v>0?'▲':v<0?'▼':'—';
 /* 讓「目前持倉」框的高度對齊左側「持股比例」框 (窄螢幕堆疊時取消對齊) */
@@ -839,7 +855,7 @@ function renderWallet(){
     const rpl=h.realized_pnl||0;
     return `<div class="hrow clk" data-open="${esc(h.symbol)}" data-name="${esc(h.name)}">
       <span class="k">${esc(h.symbol)}</span>
-      <span class="sub">${fmt(h.qty,h.qty%1?4:0)} 股 · 均價 ${money(h.avg_cost,ccy)}</span>
+      <span class="sub">${qtyFmt(h.qty)} 股 · 均價 ${money(h.avg_cost,ccy)}</span>
       <span class="mv">市值<br>${h.market_value==null?'—':money(h.market_value,ccy)}</span>
       <span class="pnl ${dr}">${p==null?'—':signMoney(p,ccy)}<br><span style="font-size:11px">${h.pnl_pct==null?'':a+' '+fmt(Math.abs(h.pnl_pct))+'%'}</span></span>
       <span class="rpnl ${_dcls(rpl)}" title="已實現損益">${rpl===0?'—':signMoney(rpl,ccy)}</span></div>`;
@@ -857,7 +873,7 @@ function renderWallet(){
       <span class="g">${esc(dep.date)}</span>
       <span class="g" style="flex:1">${esc(dep.note||'')}</span>
       <span class="del" data-deldep="${dep.id}">🗑 刪除</span></div>`;}).join('');
-    db.querySelectorAll('[data-deldep]').forEach(bn=>bn.onclick=async()=>{await api().deposit_delete(+bn.dataset.deldep);loadWallet();});}
+    db.querySelectorAll('[data-deldep]').forEach(bn=>bn.onclick=()=>armDelete(bn,async()=>{await api().deposit_delete(+bn.dataset.deldep);loadWallet();}));}
   // 交易紀錄 (所選幣別,依日期分組)
   const txs=(d.transactions||[]).filter(t=>(t.currency||'USD')===ccy);
   $('#wallet-txcount').textContent=`${txs.length} 筆`;
@@ -870,11 +886,11 @@ function renderWallet(){
       const rows=gp.items.map(t=>{const buy=t.side?t.side==='buy':t.quantity>=0;
         return `<div class="txrow"><span class="side ${buy?'buy':'sell'}">${buy?'買':'賣'}</span>
           <span style="min-width:56px;font-weight:800">${esc(t.symbol)}</span>
-          <span class="g">${fmt(Math.abs(t.quantity),t.quantity%1?4:0)} 股 @ ${money(t.price,ccy)}</span>
+          <span class="g">${qtyFmt(Math.abs(t.quantity))} 股 @ ${money(t.price,ccy)}</span>
           <span class="del" data-del="${t.id}">🗑 刪除</span></div>`;}).join('');
       return `<div class="txgroup"><div class="txgroup-head"><span class="txgroup-date">${esc(gp.date)}</span><span class="txgroup-count">${gp.items.length} 筆</span></div><div class="txgroup-body">${rows}</div></div>`;
     }).join('');
-    tb.querySelectorAll('.del').forEach(bn=>bn.onclick=async()=>{await api().wallet_delete(+bn.dataset.del);loadWallet();});}
+    tb.querySelectorAll('.del').forEach(bn=>bn.onclick=()=>armDelete(bn,async()=>{await api().wallet_delete(+bn.dataset.del);loadWallet();}));}
   requestAnimationFrame(syncHoldingsHeight);
 }
 function renderWalletCharts(){

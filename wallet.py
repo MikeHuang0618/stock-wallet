@@ -53,7 +53,7 @@ def aggregate_holdings(transactions):
         if abs(e["qty"]) < EPS:
             continue
         avg = e["cost"] / e["qty"] if e["qty"] > EPS else 0.0
-        out.append({"symbol": s, "name": e["name"], "qty": round(e["qty"], 6),
+        out.append({"symbol": s, "name": e["name"], "qty": round(e["qty"], 8),
                     "avg_cost": avg, "cost_basis": e["cost"],
                     "realized_pnl": e["realized_pnl"]})
     return {"holdings": out, "total_realized_pnl": total_realized}
