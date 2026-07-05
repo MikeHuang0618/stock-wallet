@@ -315,6 +315,16 @@ class QuoteRefresher(threading.Thread):
             self._notify()   # 每輪抓取後通知(即使失敗),讓前端解除等待並渲染最新快取
 
 
+def signals_from_ohlcv(ohlcv):
+    """從 _ohlcv payload 取出技術訊號(純函式)。有 error / 缺資料 → 空清單。
+    委派 signals.detect_all,供黃金頁與詳細頁共用同一套訊號定義。"""
+    if not ohlcv or ohlcv.get("error"):
+        return []
+    return sig.detect_all(ohlcv.get("open") or [], ohlcv.get("high") or [],
+                          ohlcv.get("low") or [], ohlcv.get("close") or [],
+                          ohlcv.get("volume") or [])
+
+
 def _event_key(e):
     return (e.get("date"), e.get("type"), e.get("title"), e.get("time"))
 
@@ -528,6 +538,25 @@ class Api:
     def get_quotes_cached(self):
         """前端即讀報價快取(不打網路)。刷新器尚未啟動時回空 dict。"""
         return self._refresher.get_cache() if self._refresher else {}
+
+    def get_signals(self, symbols):
+        """回傳 {symbol: [signal,...]}。內部用日線 _ohlcv(快取跟隨其 TTL)+ detect_all。
+        供黃金頁在報價之後非同步載入技術訊號徽章。"""
+        out = {}
+        symbols = list(dict.fromkeys(symbols or []))
+        if not symbols:
+            return out
+        spec = analysis.resolve_fetch_spec("天")   # 日線
+        if not spec:
+            return out
+
+        def one(sym):
+            return sym, signals_from_ohlcv(self._ohlcv(sym, spec))
+
+        with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as ex:
+            for s, sigs in ex.map(one, symbols):
+                out[s] = sigs
+        return out
 
     # ---- TAIFEX 官方資料源 (台股 VIX / 台指期) ----
     @staticmethod

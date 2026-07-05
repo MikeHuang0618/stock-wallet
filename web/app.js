@@ -413,10 +413,25 @@ function initSearch(){
 }
 
 /* ---------- gold ---------- */
+let _goldSig={},_goldSigKey='';
 function renderGoldPrices(){
   const g=activeGold();
   const t=$('#gold-title');if(t)t.textContent=(STATE.market==='tw'?'台股':'美股')+'槓桿黃金 · '+g[0].short+' / '+g[1].short;
   renderCards($('#gold-prices'),g.map((x,n)=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true,_i:n})).join(''));
+  // 每張卡加訊號槽,先用現有快取渲染(載入前不佔位);標的集合變更時才重新抓取。
+  $('#gold-prices').querySelectorAll('.qcard[data-sym]').forEach(c=>{
+    const d=document.createElement('div');d.className='gold-sigs';c.appendChild(d);
+  });
+  renderGoldSigs();
+  const syms=g.map(x=>x.sym),key=syms.join(',');
+  if(key!==_goldSigKey){_goldSigKey=key;api().get_signals(syms).then(res=>{_goldSig=res||{};renderGoldSigs();}).catch(()=>{});}
+}
+function renderGoldSigs(){
+  $('#gold-prices').querySelectorAll('.qcard[data-sym]').forEach(c=>{
+    const slot=c.querySelector('.gold-sigs');if(!slot)return;
+    const sigs=_goldSig[c.dataset.sym]||[];
+    slot.innerHTML=sigs.map(s=>`<span class="sig-badge ${esc(s.dir)}">${esc(s.label)}</span>`).join('');
+  });
 }
 function earningsEvents(){
   return Object.entries(STATE.earnings).map(([sym,info])=>({
@@ -466,15 +481,20 @@ function renderAlerts(){
   const box=$('#alerts');
   if(!STATE.alerts.length){box.innerHTML='<div class="empty">尚未設定任何價位訊號 · 於上方新增</div>';return;}
   const nowFiring=new Set();
-  box.innerHTML=STATE.alerts.map((a,i)=>{
-    const p=STATE.quotes[a.tk]||{},now=p.price;
-    let hit=false;if(now!=null)hit=a.cond==='above'?now>=a.lvl:now<=a.lvl;
-    const key=a.tk+a.cond+a.lvl;if(hit)nowFiring.add(key);
+  // 先算觸發狀態,觸發列排到頂部(只排顯示順序;data-i 保留原索引供刪除)
+  const rows=STATE.alerts.map((a,i)=>{
+    const now=(STATE.quotes[a.tk]||{}).price;
+    const hit=now!=null&&(a.cond==='above'?now>=a.lvl:now<=a.lvl);
+    if(hit)nowFiring.add(a.tk+a.cond+a.lvl);
+    return {a,i,now,hit};
+  });
+  rows.sort((x,y)=>(y.hit?1:0)-(x.hit?1:0));   // 觸發者在前(V8 穩定排序保留同狀態原序)
+  box.innerHTML=rows.map(({a,i,now,hit})=>{
     const meta=goldMeta(a.tk);
     const condTxt=a.cond==='above'?'突破 ≥':'跌破 ≤';
     return `<div class="al ${hit?'hit':''}"><span class="k">${esc(meta.short)}</span><span class="cond">${condTxt}</span>
       <span class="lvl">${fmt(a.lvl)}</span><span class="now">現價<br>${now==null?'—':fmt(now)}</span>
-      <span class="st ${hit?'fire':'wait'}">${hit?'✓ 觸發':'等待中'}</span><span class="x" data-i="${i}">✕</span></div>`;
+      <span class="st ${hit?'fire':'wait'}">${hit?'● 已觸發':'等待中'}</span><span class="x" data-i="${i}">✕</span></div>`;
   }).join('');
   box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{STATE.alerts.splice(+x.dataset.i,1);persistAlerts();renderAlerts();});
   // 新觸發 -> 系統通知
@@ -520,6 +540,7 @@ function openCalendarToDate(date_str){
   $('#cal-year-sel').value=year;
   renderFullCalendar();
   nav('calendar');
+  showCalDayEvents(date_str,true);   // 展開該日事件清單
   setTimeout(()=>{
     const el=document.querySelector(`[data-date="${date_str}"]`);
     if(el){
@@ -579,8 +600,18 @@ function initCustomEventsForm(){
     await reloadEvents();
   };
 }
+let _calByDate={};   // 全年曆:date → 該日完整事件清單(供點日展開)
+function showCalDayEvents(date,force){
+  const box=$('#cal-day-events');if(!box)return;
+  if(!force&&box.dataset.date===date){box.innerHTML='';box.dataset.date='';return;}   // 再點同日 → 收合
+  const evs=_calByDate[date]||[];box.dataset.date=date;
+  box.innerHTML=evs.length?(`<div class="cal-day-h">${esc(date)}</div>`+evs.map(e=>`
+    <div class="ev"><div class="impact ${esc(e.impact||'')}"></div><div class="badge ${esc(e.type)}">${esc(e.type)}</div>
+      <div class="body"><div class="t">${esc(e.title)}</div><div class="m">${e.time&&e.time!=='—'?esc(e.time)+' · ':''}${esc(TYPE_NAMES[e.type]||'自訂')}</div></div></div>`).join('')):'';
+}
 function renderCalendarInto(boxId,events,year='2026'){
-  const byDate={};events.forEach(e=>{if(e.date&&e.date.startsWith(year))(byDate[e.date]=byDate[e.date]||[]).push(e.type);});
+  const byDate={},byDateFull={};
+  events.forEach(e=>{if(e.date&&e.date.startsWith(year)){(byDate[e.date]=byDate[e.date]||[]).push(e.type);(byDateFull[e.date]=byDateFull[e.date]||[]).push(e);}});
   const [,tm,td]=STATE.today.split('-').map(Number);
   const box=$(boxId);if(!box)return;
   let html='';
@@ -604,6 +635,12 @@ function renderCalendarInto(boxId,events,year='2026'){
       tip.style.left=Math.min(ev.clientX+12,innerWidth-230)+'px';tip.style.top=(ev.clientY+14)+'px';};
     el.onmouseleave=()=>tip.classList.remove('show');
   });
+  // 全年曆:點有事件的日期 → 於年曆下方展開該日事件清單(再點收合)
+  if(boxId==='#full-calendar'){
+    _calByDate=byDateFull;
+    const cur=$('#cal-day-events');if(cur&&!byDateFull[cur.dataset.date]){cur.innerHTML='';cur.dataset.date='';}
+    box.querySelectorAll('.day.has[data-date]').forEach(el=>{el.style.cursor='pointer';el.onclick=()=>showCalDayEvents(el.dataset.date);});
+  }
 }
 
 /* ---------- chart engine (SVG) ---------- */
@@ -696,7 +733,7 @@ function hideCross(){
 function initCrosshair(){
   const page=$('#page-detail');
   page.addEventListener('mousemove',e=>{
-    const ms=STATE.detail.charts;if(!ms.length)return;
+    const ms=STATE.detail.charts;if(!ms.length){hideCross();return;}   // 無圖表時也清掉滯留 tooltip
     const hov=ms.find(m=>{const r=m.wrap.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
     if(!hov){hideCross();return;}
     const r=hov.wrap.getBoundingClientRect();
@@ -903,7 +940,7 @@ function svgPie(items){
       arcs+=`<path d="M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} A${R},${R} 0 ${large} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" fill="${it.color}"/>`;}
     a=a2;
   });
-  const legend=items.map(it=>`<div><i style="background:${it.color}"></i>${esc(it.label)} <span style="color:var(--muted)">${(it.value/total*100).toFixed(1)}%</span></div>`).join('');
+  const legend=items.map(it=>`<div><i style="background:${it.color}"></i><span class="pie-k">${esc(it.label)}</span>${it.name&&it.name!==it.label?`<span class="pie-nm">${esc(it.name)}</span>`:''} <span style="color:var(--muted)">${(it.value/total*100).toFixed(1)}%</span></div>`).join('');
   return `<div class="pie-wrap"><svg width="160" height="160" viewBox="0 0 160 160">${arcs}<circle cx="${cx}" cy="${cy}" r="34" fill="#12131a"/></svg><div class="pie-legend">${legend}</div></div>`;
 }
 
@@ -952,7 +989,7 @@ function syncHoldingsHeight(){
 }
 function renderWalletPie(sel,holdings,ccy){
   const items=(holdings||[]).filter(h=>h.market_value!=null&&h.market_value>0)
-    .map((h,i)=>({label:h.symbol,value:h.market_value,color:PIE_COLORS[i%PIE_COLORS.length]}));
+    .map((h,i)=>({label:h.symbol,name:h.name,value:h.market_value,color:PIE_COLORS[i%PIE_COLORS.length]}));
   $(sel).innerHTML=items.length?svgPie(items):`<div class="empty">尚無${ccy==='TWD'?'台股':'美股'}持倉市值</div>`;
 }
 function renderWallet(){
@@ -1026,7 +1063,7 @@ function renderWallet(){
     const p=h.pnl,dr=p==null?'flat':_dcls(p),a=p>0?'▲':p<0?'▼':'';
     const rpl=h.realized_pnl||0;
     return `<div class="hrow clk" data-open="${esc(h.symbol)}" data-name="${esc(h.name)}">
-      <span class="k">${esc(h.symbol)}</span>
+      <span class="k">${esc(h.symbol)}${h.name&&h.name!==h.symbol?`<span class="k-nm">${esc(h.name)}</span>`:''}</span>
       <span class="sub">${qtyFmt(h.qty)} 股 · 均價 ${money(h.avg_cost,ccy)}</span>
       <span class="mv">市值<br>${h.market_value==null?'—':money(h.market_value,ccy)}</span>
       <span class="pnl ${dr}">${p==null?'—':signMoney(p,ccy)}<br><span style="font-size:11px">${h.pnl_pct==null?'':a+' '+fmt(Math.abs(h.pnl_pct))+'%'}</span></span>
@@ -1059,6 +1096,7 @@ function renderWallet(){
         return `<div class="txrow"><span class="side ${buy?'buy':'sell'}">${buy?'買':'賣'}</span>
           <span style="min-width:56px;font-weight:800">${esc(t.symbol)}</span>
           <span class="g">${qtyFmt(Math.abs(t.quantity))} 股 @ ${money(t.price,ccy)}</span>
+          <span class="g tx-amt">${money(Math.abs(t.quantity)*t.price,ccy)}</span>
           <span class="del" data-del="${t.id}">🗑 刪除</span></div>`;}).join('');
       return `<div class="txgroup"><div class="txgroup-head"><span class="txgroup-date">${esc(gp.date)}</span><span class="txgroup-count">${gp.items.length} 筆</span></div><div class="txgroup-body">${rows}</div></div>`;
     }).join('');
@@ -1110,7 +1148,7 @@ function hideWalletCross(){
 function initWalletCrosshair(){
   const page=$('#page-wallet');
   page.addEventListener('mousemove',e=>{
-    const ms=STATE.wallet.charts;if(!ms.length)return;
+    const ms=STATE.wallet.charts;if(!ms.length){hideWalletCross();return;}   // 無圖表時也清掉滯留 tooltip
     const hov=ms.find(m=>{const r=m.wrap.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
     if(!hov){hideWalletCross();return;}
     const r=hov.wrap.getBoundingClientRect();

@@ -91,6 +91,8 @@ body{
 .btn.gold{background:linear-gradient(145deg,var(--gold-2),var(--gold-dim));color:#3a2c07;border:none;box-shadow:0 6px 18px rgba(232,195,122,.3)}
 .btn.gold:hover{filter:brightness(1.06)}
 .btn:disabled{opacity:.6;cursor:default}
+/* AI 分析/重新評估按鈕停用時明確弱化(取代僅 disabled 屬性無視覺) */
+#ai-run:disabled,#ai-refresh:disabled{opacity:.4;cursor:not-allowed}
 .spin{display:inline-block;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -204,7 +206,7 @@ html.updown-tw{--up:#ff6b6b;--down:#38d39f}
 .al .now{margin-left:auto;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;line-height:1.35}
 .al .st{font-size:11px;font-weight:800;padding:4px 9px;border-radius:999px;white-space:nowrap}
 .st.wait{color:var(--muted);background:rgba(255,255,255,.05)}
-.st.fire{color:#053;background:rgba(56,211,159,.2);border:1px solid rgba(56,211,159,.45)}
+.st.fire{color:#38d39f;background:rgba(56,211,159,.16);border:1px solid rgba(56,211,159,.5);border-radius:7px}   /* 明確徽章(非膠囊/開關);綠色固定不隨漲跌慣例 */
 .al .x{cursor:pointer;color:var(--muted);font-size:16px;padding:2px 6px;border-radius:7px;line-height:1}
 .al .x:hover{color:var(--down);background:rgba(255,107,107,.1)}
 .empty{color:var(--muted);font-size:12.5px;text-align:center;padding:22px 10px;line-height:1.6}
@@ -213,6 +215,9 @@ html.updown-tw{--up:#ff6b6b;--down:#38d39f}
 .legend span{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
 .legend i{width:11px;height:11px;border-radius:4px;display:inline-block}
 .months{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+#cal-day-events{margin-top:16px;display:flex;flex-direction:column;gap:8px}
+#cal-day-events:empty{display:none}
+.cal-day-h{font-size:13px;font-weight:800;color:var(--gold)}
 .mo{background:rgba(255,255,255,.02);border:1px solid var(--panel-brd);border-radius:13px;padding:11px}
 .mo h3{margin:0 0 8px;font-size:12px;font-weight:700;text-align:center;color:var(--muted)}
 .mo.cur h3{color:var(--gold)}
@@ -332,6 +337,10 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .lev-warn{margin-top:12px;padding:9px 13px;border:1px solid rgba(255,180,84,.35);background:rgba(255,180,84,.08);border-radius:10px;font-size:11.5px;color:var(--fomc);line-height:1.6}
 .signal-row{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
 .sig-badge{display:inline-flex;align-items:baseline;gap:7px;padding:7px 13px;border-radius:999px;font-size:13px;font-weight:700;border:1px solid;transition:.15s}
+/* 黃金卡技術訊號徽章:沿用 .sig-badge 配色,較小尺寸;無訊號時不佔位 */
+.gold-sigs{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+.gold-sigs:empty{display:none}
+.gold-sigs .sig-badge{font-size:10.5px;padding:3px 8px;gap:4px}
 .sig-badge .n{font-weight:400;font-size:11px;opacity:.75}
 .sig-badge.bullish{color:var(--up);border-color:rgba(56,211,159,.45);background:rgba(56,211,159,.1)}
 .sig-badge.bearish{color:var(--down);border-color:rgba(255,107,107,.45);background:rgba(255,107,107,.1)}
@@ -398,6 +407,7 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .hrow{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;border:1px solid var(--panel-brd);
   margin-top:8px;background:rgba(255,255,255,.015)}
 .hrow .k{font-weight:800;min-width:64px}
+.hrow .k .k-nm{display:block;font-size:10px;font-weight:500;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hrow .sub{font-size:11.5px;color:var(--muted)}
 .hrow .mv{margin-left:auto;text-align:right;font-variant-numeric:tabular-nums}
 .hrow .pnl{min-width:120px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
@@ -409,6 +419,7 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .txrow .side{font-weight:800;min-width:38px}
 .txrow .buy{color:var(--up)} .txrow .sell{color:var(--down)}
 .txrow .g{color:var(--muted);font-variant-numeric:tabular-nums}
+.txrow .tx-amt{margin-left:auto;color:var(--ink);font-weight:700}   /* 成交金額 = 數量×價格,右對齊 */
 .txrow .del{margin-left:auto;cursor:pointer;color:var(--muted);font-size:14px;padding:3px 8px;border-radius:7px}
 .txrow .del:hover{color:var(--down);background:rgba(255,107,107,.1)}
 /* 兩段式刪除:第一次點擊進入「確認刪除?」武裝狀態(紅底),3 秒後自動還原 */
@@ -444,6 +455,8 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 .pie-legend{display:flex;flex-direction:column;gap:6px;font-size:12px}
 .pie-legend div{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
 .pie-legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.pie-legend .pie-k{font-weight:700}
+.pie-legend .pie-nm{color:var(--muted);max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* Settings */
 .set-krow{display:grid;grid-template-columns:150px 1fr auto auto;gap:10px;align-items:center;margin-bottom:10px}
