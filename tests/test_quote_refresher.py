@@ -66,6 +66,53 @@ def test_refresher_no_overlap():
         release.set()
 
 
+def test_refresher_same_symbols_no_refetch():
+    """set_symbols 相同集合(即使順序不同)→ 不重新觸發抓取(消除雙重推送)。"""
+    calls = []
+    ev = threading.Event()
+
+    def fake_fetch(syms):
+        calls.append(list(syms))
+        ev.set()
+        return {}
+
+    r = api.QuoteRefresher(fake_fetch, lambda: None, interval=30)
+    r.start()
+    try:
+        r.set_symbols(["A", "B"])
+        assert ev.wait(2), "首次(空→新集合)應觸發抓取"
+        assert len(calls) == 1
+        ev.clear()
+        r.set_symbols(["B", "A"])       # 同一集合、不同順序
+        assert not ev.wait(0.5), "相同集合不應再觸發抓取"
+        assert len(calls) == 1
+    finally:
+        r.stop()
+
+
+def test_refresher_request_now_refetches_without_change():
+    """request_now 即使標的沒變也強制抓一次(手動 ↻)。"""
+    calls = []
+    ev = threading.Event()
+
+    def fake_fetch(syms):
+        calls.append(list(syms))
+        ev.set()
+        return {}
+
+    r = api.QuoteRefresher(fake_fetch, lambda: None, interval=30)
+    r.start()
+    try:
+        r.set_symbols(["A"])
+        assert ev.wait(2)
+        ev.clear()
+        r.request_now()
+        assert ev.wait(2), "request_now 應強制再抓一次"
+        assert len(calls) == 2
+    finally:
+        r.stop()
+
+
 def test_refresher_dedupes_symbols():
     """set_symbols 會去重(避免同一標的重覆抓)。"""
     seen = []

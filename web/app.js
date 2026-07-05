@@ -110,6 +110,24 @@ function keyActivatable(el){
   el.setAttribute('tabindex','0');el.setAttribute('role','button');
   el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}});
 }
+// 漲跌色:讀當前 --up/--down(受漲跌慣例 body class 影響),供圖表硬著色處跟隨。
+function cssVar(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
+function upColor(){return cssVar('--up')||'#38d39f';}
+function downColor(){return cssVar('--down')||'#ff6b6b';}
+// 卡片容器:首次渲染播 card-in 進場動畫並標記 data-live;之後重建先加 .no-anim
+// 不重播動畫(避免資料刷新時卡片反覆浮起)。markNoAnim 供多行模板就地套用。
+function markNoAnim(el){
+  if(!el)return;
+  if(el.dataset.live)el.classList.add('no-anim');
+  else{el.classList.remove('no-anim');el.dataset.live='1';}
+}
+function renderCards(el,html){if(!el)return;markNoAnim(el);el.innerHTML=html;}
+// 漲跌顏色慣例:us=綠漲紅跌(預設)、tw=紅漲綠跌。以 html class 交換 --up/--down。
+function initUpDown(){
+  const c=localStorage.getItem('updown')==='tw'?'tw':'us';
+  document.documentElement.classList.toggle('updown-tw',c==='tw');
+  const sel=$('#updown-sel');if(sel)sel.value=c;
+}
 
 /* Theme Engine */
 function initTheme(){
@@ -207,12 +225,12 @@ window.addEventListener('touchmove', (e) => {
 }, {passive: true});
 window.addEventListener('resize', ()=>closeAllSelect());
 
-function sparkSVG(vals){
+function sparkSVG(vals,dir){
   if(!vals||vals.length<2) return '<svg class="spark"></svg>';
   const w=100,h=34,pad=3,min=Math.min(...vals),max=Math.max(...vals),rng=(max-min)||1;
-  const up=vals[vals.length-1]>=vals[0];
   const pts=vals.map((v,i)=>{const x=pad+i*(w-2*pad)/(vals.length-1);const y=h-pad-(v-min)/rng*(h-2*pad);return x.toFixed(1)+','+y.toFixed(1);});
-  const col=up?'var(--up)':'var(--down)',id='g'+Math.random().toString(36).slice(2,7);
+  // 顏色跟隨「當日漲跌方向」(與百分比一致),線本身仍畫 30 點走勢。方向未知則中性色。
+  const col=dir==='up'?'var(--up)':dir==='down'?'var(--down)':'var(--muted)',id='g'+Math.random().toString(36).slice(2,7);
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
     <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
     <polyline points="${pad},${h-pad} ${pts.join(' ')} ${w-pad},${h-pad}" fill="url(#${id})" stroke="none"/>
@@ -231,14 +249,14 @@ function quoteCard(sym,meta){
     <div class="tk"><span class="sym">${esc(meta.short||sym)}</span>${biasHtml}</div>
     <div class="nm">${esc(meta.name||'')}</div>
     <div class="row"><div class="price">${p.error||p.price==null?(p.price==null&&!p.error?'…':'—'):fmt(p.price,dec)}</div>
-    <div class="chg ${dir}">${chg}</div></div>${sparkSVG(p.spark)}</div>`;
+    <div class="chg ${dir}">${chg}</div></div><div class="spark-wrap">${sparkSVG(p.spark,dir)}${(p.spark&&p.spark.length>1)?'<span class="spark-30d">30d</span>':''}</div></div>`;
 }
 
 /* ---------- dashboard ---------- */
 function renderIndices(){
   const idx=activeIndices();
   $('#idx-count').textContent=`${idx.length} 項`;
-  $('#indices').innerHTML=idx.map((i,n)=>quoteCard(i.sym,{name:i.name,short:i.short,bias:i.bias||'指數',cls:'idx',dec:2,clickable:i.clickable!==false,_i:n})).join('');
+  renderCards($('#indices'),idx.map((i,n)=>quoteCard(i.sym,{name:i.name,short:i.short,bias:i.bias||'指數',cls:'idx',dec:2,clickable:i.clickable!==false,_i:n})).join(''));
 }
 function heatColor(pct){
   if(pct==null)return 'rgba(255,255,255,.04)';
@@ -289,7 +307,7 @@ function renderWatchlist(){
     box.querySelectorAll('.hm-tile[data-open]').forEach(t=>t.onclick=()=>openDetail(t.dataset.open,t.dataset.name));
   }else{
     box.className='qgrid';
-    box.innerHTML=wl.map((w,n)=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true,_i:n})).join('');
+    renderCards(box,wl.map((w,n)=>quoteCard(w.sym,{name:w.name,short:w.sym,removable:true,clickable:true,_i:n})).join(''));
     box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>removeWatch(b.dataset.rm));
   }
 }
@@ -398,7 +416,7 @@ function initSearch(){
 function renderGoldPrices(){
   const g=activeGold();
   const t=$('#gold-title');if(t)t.textContent=(STATE.market==='tw'?'台股':'美股')+'槓桿黃金 · '+g[0].short+' / '+g[1].short;
-  $('#gold-prices').innerHTML=g.map((x,n)=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true,_i:n})).join('');
+  renderCards($('#gold-prices'),g.map((x,n)=>quoteCard(x.sym,{name:x.name,short:x.short,bias:x.bias,cls:x.cls,dec:2,clickable:true,_i:n})).join(''));
 }
 function earningsEvents(){
   return Object.entries(STATE.earnings).map(([sym,info])=>({
@@ -749,7 +767,27 @@ function openDetail(sym,name){
   STATE.detail.sym=sym;STATE.detail.name=name||sym;STATE.detail.autoAi=true;
   $('#d-sym').textContent=sym;$('#d-name').textContent=name||'';
   setAiBadge('');$('#ai-out').style.display='none';
+  renderDetailHeader();   // 先清價格 header,避免殘留上一個標的的價格
   syncDetailControls();showPage('detail');loadDetail();
+}
+// 依當前標的的報價更新右上價格/漲跌 header;缺報價一律顯示「—」,永不殘留舊值。
+function renderDetailHeader(){
+  const q=STATE.quotes[STATE.detail.sym]||{},el=$('#d-price'),ce=$('#d-chg');
+  if(!el||!ce)return;
+  if(q.price!=null){const dir=q.change>0?'up':q.change<0?'down':'flat',ar=dir==='up'?'▲':dir==='down'?'▼':'—';
+    el.textContent=fmt(q.price);el.className='p '+dir;
+    ce.className='c '+dir;ce.textContent=q.change==null?'':`${ar} ${fmt(Math.abs(q.change))} (${fmt(Math.abs(q.changePct))}%)`;
+  }else{el.textContent='—';el.className='p flat';ce.textContent='';ce.className='c flat';}
+}
+// 非觀察名單標的:STATE.quotes 尚無報價時補抓一次以更新 header(帶競態防護)。
+function ensureDetailQuote(sym){
+  const q=STATE.quotes[sym];
+  if(q&&q.price!=null){renderDetailHeader();return;}
+  api().get_quotes([sym]).then(res=>{
+    if(STATE.detail.sym!==sym)return;   // 已切到別的標的,丟棄
+    Object.assign(STATE.quotes,res||{});
+    renderDetailHeader();
+  }).catch(()=>{});
 }
 function setAiBadge(text){
   const el=$('#d-aibadge');
@@ -780,6 +818,7 @@ function syncDetailControls(){
 async function loadDetail(){
   const d=STATE.detail;if(!d.sym)return;const sym=d.sym;syncDetailControls();hideCross();
   d.loading=true;$('#d-price-chart').innerHTML='<div class="chart-msg">載入中…</div>';
+  ensureDetailQuote(sym);   // 補抓非觀察名單標的的報價,更新右上 header
   const panels=d.panels.filter(Boolean);
   const st=d.custom?d.start:null,en=d.custom?d.end:null;
   let data;
@@ -800,10 +839,7 @@ function renderSignals(sigs){
 function renderDetail(){
   const d=STATE.detail,data=d.data;
   STATE.detail.charts=[];hideCross();
-  const q=STATE.quotes[d.sym]||{};
-  if(q.price!=null){const dir=q.change>0?'up':q.change<0?'down':'flat';const ar=dir==='up'?'▲':dir==='down'?'▼':'—';
-    $('#d-price').textContent=fmt(q.price);$('#d-price').className='p '+dir;
-    $('#d-chg').className='c '+dir;$('#d-chg').textContent=q.change==null?'':`${ar} ${fmt(Math.abs(q.change))} (${fmt(Math.abs(q.changePct))}%)`;}
+  renderDetailHeader();
   if(!data||data.error){$('#d-price-chart').innerHTML=`<div class="chart-msg">無法載入資料 ${data&&data.error?'· '+esc(data.error):''}</div>`;
     $('#d-panel-chart-0').innerHTML='';$('#d-panel-chart-1').innerHTML='';$('#d-signals').innerHTML='';return;}
   $('#d-signals').innerHTML=renderSignals(data.signals);
@@ -835,20 +871,21 @@ function renderDetail(){
 }
 function buildPanelOpts(name,pd,labels){
   if(name==='volume'){
-    const colors=pd.values.map((v,i)=>pd.up[i]?'#38d39f':'#ff6b6b');
+    const colors=pd.values.map((v,i)=>pd.up[i]?upColor():downColor());
     const lines=pd.ma?[{name:'均量20',color:'#e8c37a',values:pd.ma,w:1.4}]:[];
     const legend=legendHTML([{name:'成交量',color:'#7a8090'}].concat(pd.ma?[{name:'均量20',color:'#e8c37a',val:lastVal(pd.ma,fmtVol)}]:[]));
     return {legend,opts:{height:150,labels,bars:{values:pd.values,colors,baseline:'bottom'},lines,
       fmtY:fmtVol,barName:'成交量',barFmt:fmtVol}};
   }
   if(name==='macd'){
-    const hist=pd.hist,colors=hist.map(v=>v==null?'#666':v>=0?'#38d39f':'#ff6b6b');
+    const hist=pd.hist,colors=hist.map(v=>v==null?'#666':v>=0?upColor():downColor());
     const lines=[{name:'MACD',color:SERIES_COLOR.MACD,values:pd.series.MACD},{name:'Signal',color:SERIES_COLOR.Signal,values:pd.series.Signal}];
     const legend=legendHTML([{name:'MACD',color:SERIES_COLOR.MACD,val:lastVal(pd.series.MACD)},{name:'Signal',color:SERIES_COLOR.Signal,val:lastVal(pd.series.Signal)}]);
     return {legend,opts:{height:160,labels,bars:{values:hist,colors,baseline:'zero'},lines,zeroLine:true,
       fmtY:v=>v.toFixed(2),barName:'柱',barFmt:v=>v.toFixed(3)}};
   }
-  const lines=Object.entries(pd.series).map(([nm,vals])=>({name:nm,color:SERIES_COLOR[nm]||'#e8c37a',values:vals}));
+  const _udBand={'上軌':downColor(),'下軌':upColor()};   // 布林上/下軌跟隨漲跌慣例
+  const lines=Object.entries(pd.series).map(([nm,vals])=>({name:nm,color:_udBand[nm]||SERIES_COLOR[nm]||'#e8c37a',values:vals}));
   const leg=lines.map(l=>({name:l.name,color:l.color,val:lastVal(l.values,name==='obv'?fmtVol:null)}));
   return {legend:legendHTML(leg),opts:{height:name==='bollinger'?200:150,labels,lines,guides:pd.guides||[],
     zeroLine:name==='obv',fmtY:name==='obv'?fmtVol:v=>v.toFixed(name==='kd'||name==='rsi'?0:2)}};
@@ -873,7 +910,7 @@ function svgPie(items){
 /* ---------- wallet ---------- */
 async function loadWallet(){
   const w=STATE.wallet;if(w.loading)return;w.loading=true;
-  $('#wallet-summary').innerHTML='<div class="qcard"><div class="nm">載入中…</div></div>';
+  if(!w.data)$('#wallet-summary').innerHTML='<div class="qcard"><div class="nm">載入中…</div></div>';  // 僅首次顯示;已有資料時靜默更新
   try{w.data=await api().wallet_holdings();}catch(e){w.data=null;}
   renderWallet();
   try{w.history=await api().wallet_history();}catch(e){w.history=null;}
@@ -943,14 +980,26 @@ function renderWallet(){
   // ----- 頂列:當日損益 (依所選幣別 = 美股/台股) + 總計 + 美金 + 台幣 -----
   const dc=b.day_change||0,dcp=b.day_change_pct||0,dcMkt=ccy==='TWD'?'台股':'美股';
   const dcDateNote=b.day_date?(`交易日 ${b.day_date}${b.prev_date?' · 較 '+b.prev_date+' 收盤':''}`):'當日持倉市值變動';
+  // 現金餘額 = 投入資金 − 持倉成本 + 已實現損益 = portfolio_value − total_value
+  const usdCash=U.portfolio_value-U.total_value,twdCash=T.portfolio_value-T.total_value,selCash=b.portfolio_value-b.total_value;
+  markNoAnim($('#wallet-hero-grid'));
   $('#wallet-hero-grid').innerHTML=`
     <div class="qcard hero daychange"><div class="nm">當日損益 Day Change · ${dcMkt}</div><div class="row"><div class="price ${_dcls(dc)}">${signMoney(dc,ccy)}</div><div class="chg ${_dcls(dc)}" style="white-space:nowrap;flex-shrink:0">${_arr(dcp)} ${fmt(Math.abs(dcp))}%</div></div><div class="ccy-sub">${dcDateNote}</div></div>
     <div class="qcard hero"><div class="nm">總投入資金</div><div class="row"><div class="price">${totDep$}</div></div><div class="ccy-sub">${convLabel}</div></div>
-    <div class="qcard hero"><div class="nm">持有總錢包價值</div><div class="row"><div class="price ${_dcls(totRet)}">${totPv$}</div>${combinable?`<div class="chg ${_dcls(totRet)}" style="white-space:nowrap;flex-shrink:0">${_arr(totRet)} ${fmt(Math.abs(totRet||0))}%</div>`:''}</div><div class="ccy-sub">${convLabel}${fxNote}</div></div>
+    <div class="qcard hero"><div class="nm">持有總錢包價值</div><div class="row"><div class="price ${_dcls(totRet)}">${totPv$}</div>${combinable?`<div class="chg ${_dcls(totRet)}" style="white-space:nowrap;flex-shrink:0">${_arr(totRet)} ${fmt(Math.abs(totRet||0))}%</div>`:''}</div><div class="ccy-sub">${convLabel}${fxNote}</div></div>`;
+  markNoAnim($('#wallet-ccy-grid'));
+  $('#wallet-ccy-grid').innerHTML=`
     <div class="qcard"><div class="nm">💵 美金投入資金</div><div class="row"><div class="price">${money(U.total_deposits,'USD')}</div></div></div>
     <div class="qcard"><div class="nm">💵 持有美金錢包價值</div><div class="row"><div class="price ${_dcls(U.portfolio_return_pct)}">${money(U.portfolio_value,'USD')}</div><div class="chg ${_dcls(U.portfolio_return_pct)}">${_arr(U.portfolio_return_pct)} ${fmt(Math.abs(U.portfolio_return_pct||0))}%</div></div></div>
     <div class="qcard"><div class="nm">🇹🇼 台幣投入資金</div><div class="row"><div class="price">${money(T.total_deposits,'TWD')}</div></div></div>
     <div class="qcard"><div class="nm">🇹🇼 持有台幣錢包價值</div><div class="row"><div class="price ${_dcls(T.portfolio_return_pct)}">${money(T.portfolio_value,'TWD')}</div><div class="chg ${_dcls(T.portfolio_return_pct)}">${_arr(T.portfolio_return_pct)} ${fmt(Math.abs(T.portfolio_return_pct||0))}%</div></div></div>`;
+  // 收合列(捲動時顯示):當日/總投入/總價值/現金 + 幣別
+  $('#wallet-hero-compact').innerHTML=`
+    <span class="hc-item"><span class="hc-l">當日</span><span class="hc-v ${_dcls(dc)}">${signMoney(dc,ccy)}</span></span>
+    <span class="hc-item"><span class="hc-l">總投入</span><span class="hc-v">${totDep$}</span></span>
+    <span class="hc-item"><span class="hc-l">總價值</span><span class="hc-v ${_dcls(totRet)}">${totPv$}</span></span>
+    <span class="hc-item"><span class="hc-l">現金</span><span class="hc-v">${money(selCash,ccy)}</span></span>
+    <span class="hc-ccy">${ccy==='TWD'?'台幣':'美金'}</span>`;
   // ----- 持股比例:美股 / 台股 兩個圓餅 + 佔總錢包比例 -----
   renderWalletPie('#wallet-pie-usd',U.holdings,'USD');
   renderWalletPie('#wallet-pie-twd',T.holdings,'TWD');
@@ -962,8 +1011,10 @@ function renderWallet(){
   // ----- 以下依所選幣別呈現 -----
   $('#wallet-ccy-label').textContent=ccy==='TWD'?'台幣 TWD':'美金 USD';
   const pnl=b.total_pnl,pct=b.total_cost?pnl/b.total_cost*100:0,rp=b.total_realized_pnl||0;
+  markNoAnim($('#wallet-summary'));
   $('#wallet-summary').innerHTML=`
     <div class="qcard"><div class="nm">總市值</div><div class="row"><div class="price">${money(b.total_value,ccy)}</div></div></div>
+    <div class="qcard" title="= 投入資金 − 持倉成本 + 已實現損益"><div class="nm">現金餘額</div><div class="row"><div class="price">${money(selCash,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">總成本</div><div class="row"><div class="price">${money(b.total_cost,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">未實現損益</div><div class="row"><div class="price ${_dcls(pnl)}">${signMoney(pnl,ccy)}</div><div class="chg ${_dcls(pnl)}">${_arr(pnl)} ${fmt(Math.abs(pct))}%</div></div></div>
     <div class="qcard clk" data-rpnl tabindex="0" role="button"><div class="nm">已實現損益 ›</div><div class="row"><div class="price ${_dcls(rp)}">${signMoney(rp,ccy)}</div></div></div>
@@ -1026,7 +1077,7 @@ function renderWalletCharts(){
   const labels=h.dates.map(x=>x.slice(2)),color=ccy==='TWD'?'#5bc0de':'#e8c37a';
   mountWalletChart(vc,{height:200,labels,lines:[{name:`持有${label}錢包價值`,color,values:h.portfolio_value,w:1.8}],fmtY:fmtVol});
   $('#wv-legend').innerHTML=legendHTML([{name:`持有${label}錢包價值`,color,val:fmtVol(lastVal(h.portfolio_value))}]);
-  const colors=h.daily_pnl.map(v=>v>=0?'#38d39f':'#ff6b6b');
+  const colors=h.daily_pnl.map(v=>v>=0?upColor():downColor());
   drawStaticChart(pc,{height:180,labels,bars:{values:h.daily_pnl,colors,baseline:'zero'},zeroLine:true,fmtY:fmtVol});
 }
 function drawStaticChart(box,o){
@@ -1134,9 +1185,19 @@ function openRealizedModal(){
   $('#rpnl-modal').classList.add('show');
 }
 function closeRealizedModal(){$('#rpnl-modal').classList.remove('show');}
+// 錢包資金概況 sticky:捲動超過門檻收合成緊湊摘要,騰出內容區(向上捲回展開)。
+function initWalletSticky(){
+  const main=document.querySelector('.main'),sticky=$('#wallet-sticky');
+  if(!main||!sticky)return;
+  main.addEventListener('scroll',()=>{
+    if(STATE.page!=='wallet')return;
+    sticky.classList.toggle('collapsed',main.scrollTop>200);
+  });
+}
 function initWalletForm(){
   initWalletCcySwitch();
   initWalletSymSearch();
+  initWalletSticky();
   // 已實現損益卡點擊 → 明細 modal(委派於穩定容器 #wallet-summary,免每次重繪重綁)。
   $('#wallet-summary').addEventListener('click',e=>{if(e.target.closest('[data-rpnl]'))openRealizedModal();});
   $('#wallet-summary').addEventListener('keydown',e=>{
@@ -1241,6 +1302,18 @@ function initSettings(){
     tsel.onchange=()=>{
       localStorage.setItem('theme',tsel.value);
       initTheme();
+    };
+  }
+  const usel=$('#updown-sel');
+  if(usel){
+    usel.value=localStorage.getItem('updown')==='tw'?'tw':'us';
+    usel.onchange=()=>{
+      localStorage.setItem('updown',usel.value);
+      initUpDown();
+      // 重繪跟隨漲跌色的畫面(卡片/圖表由硬著色處讀新色)
+      renderIndices();renderWatchlist();renderGoldPrices();
+      if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
+      if(STATE.page==='wallet'&&STATE.wallet.data){renderWallet();renderWalletCharts();}
     };
   }
   // 勾選「API 金鑰」時提示備份檔含明文金鑰(切換即時反映)。
@@ -1382,13 +1455,15 @@ window.onQuotesPush=async function(){
 };
 let _refreshPending=false,_refreshSafety=null;
 function _refreshDone(){_refreshPending=false;clearTimeout(_refreshSafety);const icon=$('#ricon');if(icon)icon.classList.remove('spin');$('#refresh').disabled=false;}
-// 手動 ↻ / 市場切換:更新後端追蹤標的並要求立即刷新(不阻塞 UI,渲染由 onQuotesPush 收尾)。重入防護。
+// 首次載入:把當前標的交給背景刷新器(集合由空→有值即觸發第一輪抓取+推送)。
+function startQuotes(){try{api().set_quote_symbols(quoteSymbols());}catch(e){}}
+// 手動 ↻:標的沒變,只要求立即刷新一次(不再連發 set_quote_symbols,避免雙重推送)。重入防護。
 async function refreshAll(){
   if(_refreshPending)return;
   _refreshPending=true;
   const icon=$('#ricon');if(icon)icon.classList.add('spin');$('#refresh').disabled=true;
   clearTimeout(_refreshSafety);_refreshSafety=setTimeout(_refreshDone,8000);   // 推播萬一沒到的保險
-  try{await api().set_quote_symbols(quoteSymbols());await api().request_refresh_now();}
+  try{await api().request_refresh_now();}
   catch(e){_refreshDone();}
 }
 
@@ -1431,8 +1506,8 @@ function setMarket(m){
   }
   renderIndices();renderWatchlist();renderDashEvents();renderFullCalendar();renderCustomEvents();
   renderGoldPrices();refreshAlertSymbols();renderAlerts();
-  // 更新背景刷新器追蹤的新市場標的並立即刷新(報價由 onQuotesPush 推回渲染),不阻塞 UI
-  api().set_quote_symbols(quoteSymbols());api().request_refresh_now();
+  // 只更新背景刷新器的標的(集合變更即自動觸發一輪刷新+推送);不再連發 request 避免雙重推送
+  api().set_quote_symbols(quoteSymbols());
   refreshEarnings();
 }
 function initMarketSwitch(){
@@ -1505,6 +1580,7 @@ function initPalette(){
 }
 function boot(){
   initTheme();
+  initUpDown();
   initSidebar();
   initMarketSwitch();
   initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();initPerfMode();
@@ -1521,9 +1597,9 @@ function boot(){
     if(card&&!e.target.closest('.rm')){e.preventDefault();openDetail(card.dataset.open,card.dataset.name);}
   });
   renderIndices();renderGoldPrices();
-  // 初次載入後啟動背景報價推送(set_quote_symbols 會 lazy 啟動後端 QuoteRefresher);
+  // 初次載入後把標的交給後端 QuoteRefresher(空→有值即觸發首輪抓取+推送);
   // 週期性刷新(每 120 秒)由後端排程,不再用前端 setInterval。
-  loadStatic().then(refreshAll);
+  loadStatic().then(startQuotes);
 }
 if(window.pywebview) boot();
 else window.addEventListener('pywebviewready',boot);

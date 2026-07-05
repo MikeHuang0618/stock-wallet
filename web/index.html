@@ -190,9 +190,11 @@
 
       <!-- ===== Wallet ===== -->
       <div class="page" id="page-wallet">
-        <div class="sticky-hero">
-          <div class="sec-h" style="margin-top:0"><span class="dot"></span>資金概況</div>
-          <div class="qgrid" id="wallet-hero-grid" style="grid-template-columns:repeat(auto-fill,minmax(215px,1fr))"></div>
+        <div class="sticky-hero" id="wallet-sticky">
+          <div class="sec-h" id="wallet-hero-title" style="margin-top:0"><span class="dot"></span>資金概況</div>
+          <div class="qgrid" id="wallet-hero-grid" style="grid-template-columns:repeat(auto-fit,minmax(215px,1fr))"></div>
+          <div class="qgrid" id="wallet-ccy-grid" style="margin-top:12px"></div>
+          <div class="hero-compact" id="wallet-hero-compact"></div>
         </div>
 
         <div class="market-switch" id="wallet-ccy-switch" data-ccy="USD">
@@ -288,6 +290,12 @@
               <option value="system">跟隨系統</option>
               <option value="dark">Dark (深色)</option>
               <option value="light">Light (淺色)</option>
+            </select>
+          </div>
+          <div class="wtx-form" style="grid-template-columns:260px;margin-top:8px">
+            <select id="updown-sel">
+              <option value="us">漲跌顏色:綠漲紅跌(預設)</option>
+              <option value="tw">漲跌顏色:紅漲綠跌(台灣慣例)</option>
             </select>
           </div>
         </div>

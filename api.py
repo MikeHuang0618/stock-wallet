@@ -274,9 +274,12 @@ class QuoteRefresher(threading.Thread):
         self._stop = threading.Event()
 
     def set_symbols(self, symbols):
+        new = list(dict.fromkeys(symbols or []))   # 去重、保序
         with self._lock:
-            self._symbols = list(dict.fromkeys(symbols or []))   # 去重、保序
-        self._wake.set()
+            changed = set(new) != set(self._symbols)
+            self._symbols = new
+        if changed:              # 集合真的變了才喚醒立即刷新,避免同一動作觸發雙重推送
+            self._wake.set()
 
     def request_now(self):
         self._wake.set()

@@ -134,11 +134,15 @@ body{
 .qcard .price{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.2px}
 .qcard .chg{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
+/* 漲跌顏色慣例:預設綠漲紅跌(美式);台灣慣例紅漲綠跌 → 交換 --up/--down 值 */
+html.updown-tw{--up:#ff6b6b;--down:#38d39f}
 .tick-up .price{animation:tick-flash .6s ease}
 .tick-down .price{animation:tick-flash-down .6s ease}
 @keyframes tick-flash{0%{text-shadow:0 0 12px var(--up),0 0 4px var(--up);color:var(--up)}100%{text-shadow:none}}
 @keyframes tick-flash-down{0%{text-shadow:0 0 12px var(--down),0 0 4px var(--down);color:var(--down)}100%{text-shadow:none}}
 .spark{width:100%;height:34px;margin-top:6px;display:block}
+.spark-wrap{position:relative}
+.spark-30d{position:absolute;right:4px;bottom:1px;font-size:8px;line-height:1;color:var(--muted);pointer-events:none;letter-spacing:.3px}
 .qcard .rm{position:absolute;top:9px;right:10px;cursor:pointer;color:#5f6576;font-size:14px;
   width:22px;height:22px;border-radius:7px;display:grid;place-items:center;opacity:0;transition:.15s}
 .qcard:hover .rm{opacity:1}
@@ -208,7 +212,7 @@ body{
 .legend{display:flex;gap:16px;margin:2px 0 16px;flex-wrap:wrap}
 .legend span{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
 .legend i{width:11px;height:11px;border-radius:4px;display:inline-block}
-.months{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+.months{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
 .mo{background:rgba(255,255,255,.02);border:1px solid var(--panel-brd);border-radius:13px;padding:11px}
 .mo h3{margin:0 0 8px;font-size:12px;font-weight:700;text-align:center;color:var(--muted)}
 .mo.cur h3{color:var(--gold)}
@@ -463,7 +467,22 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 @media(max-width:1000px){.grid2{grid-template-columns:1fr}.months{grid-template-columns:repeat(3,1fr)}}
 
 /* Wallet Enhancements */
-.sticky-hero{position:sticky;top:69px;z-index:15;background:linear-gradient(180deg,rgba(14,15,19,.97),rgba(14,15,19,.65));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:14px 28px 14px 28px;margin:-14px -28px 14px -28px;border-bottom:1px solid var(--panel-brd)}
+.sticky-hero{position:sticky;top:69px;z-index:15;background:linear-gradient(180deg,rgba(14,15,19,.97),rgba(14,15,19,.65));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:14px 28px 14px 28px;margin:-14px -28px 14px -28px;border-bottom:1px solid var(--panel-brd);transition:padding .18s ease}
+/* 收合狀態(捲動後):隱藏標題/hero卡/各幣別列,改顯示單列緊湊摘要,騰出內容區 */
+/* 各幣別列固定 4 欄(寬)/ 2 欄(窄):4 張卡永遠成雙,不出現 3+1 孤兒 */
+#wallet-ccy-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:1180px){#wallet-ccy-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.hero-compact{display:none}
+#wallet-sticky.collapsed{padding-top:8px;padding-bottom:8px}
+#wallet-sticky.collapsed #wallet-hero-title,
+#wallet-sticky.collapsed #wallet-hero-grid,
+#wallet-sticky.collapsed #wallet-ccy-grid{display:none}
+#wallet-sticky.collapsed .hero-compact{display:flex;flex-wrap:wrap;align-items:center;gap:16px}
+.hero-compact .hc-item{display:flex;align-items:baseline;gap:6px}
+.hero-compact .hc-l{font-size:11px;color:var(--muted)}
+.hero-compact .hc-v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
+.hero-compact .hc-ccy{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--panel-brd);padding:2px 9px;border-radius:7px}
+[data-perf="low"] .sticky-hero{transition:none}
 [data-theme="light"] .sticky-hero { background:linear-gradient(180deg,rgba(244,246,248,.95),rgba(244,246,248,.6)); }
 .qcard.hero{background:linear-gradient(135deg,rgba(232,195,122,.12),rgba(232,195,122,.02));border-color:rgba(232,195,122,.5);box-shadow:0 4px 20px rgba(232,195,122,.15);z-index:2}
 .qcard.hero .row{flex-wrap:wrap}
@@ -535,6 +554,7 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 [data-perf="low"] .topbar,[data-perf="low"] .cmdk,[data-perf="low"] .sticky-hero,
 [data-perf="low"] .select-items,[data-perf="low"] .alert-form,[data-perf="low"] .cmdk-bg{backdrop-filter:none;-webkit-backdrop-filter:none}
 [data-perf="low"] .qcard{animation:none}
+.no-anim .qcard{animation:none}   /* 資料刷新重建時不重播進場動畫(僅首次進場播放) */
 [data-perf="low"] .page.active{animation:none}
 [data-perf="low"] *{transition-duration:0s!important}
 @media(prefers-reduced-motion:reduce){
