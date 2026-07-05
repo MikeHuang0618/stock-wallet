@@ -1228,14 +1228,26 @@ function openRealizedModal(){
   $('#rpnl-modal').classList.add('show');
 }
 function closeRealizedModal(){$('#rpnl-modal').classList.remove('show');}
-// 錢包資金概況 sticky:捲動超過門檻收合成緊湊摘要,騰出內容區(向上捲回展開)。
+// 錢包資金摘要固定列:以 IntersectionObserver 觀察 hero-grid 是否離開視野,只切 opacity。
+// bar 為 position:fixed 疊加層,不改任何版面高度 → 徹底無「折疊改高度→夾回 scrollTop→翻轉」回饋迴圈。
+function positionCompactBar(){
+  const tb=document.querySelector('.topbar'),bar=$('#wallet-hero-compact');
+  if(!tb||!bar)return;
+  const r=tb.getBoundingClientRect();
+  bar.style.left=r.left+'px';bar.style.top=r.bottom+'px';bar.style.width=r.width+'px';
+}
+let _walletHeroIO=null;   // 存於模組層,避免 IntersectionObserver 被 GC 而停止觀察
 function initWalletSticky(){
-  const main=document.querySelector('.main'),sticky=$('#wallet-sticky');
-  if(!main||!sticky)return;
-  main.addEventListener('scroll',()=>{
-    if(STATE.page!=='wallet')return;
-    sticky.classList.toggle('collapsed',main.scrollTop>200);
-  });
+  const main=document.querySelector('.main'),hero=$('#wallet-hero-grid'),bar=$('#wallet-hero-compact');
+  if(!main||!hero||!bar||typeof IntersectionObserver==='undefined'||_walletHeroIO)return;
+  const tbH=(document.querySelector('.topbar')||{}).offsetHeight||64;
+  _walletHeroIO=new IntersectionObserver(entries=>{
+    const gone=!entries[0].isIntersecting&&STATE.page==='wallet';   // hero 完全離開(topbar 以下)視野
+    if(gone){positionCompactBar();bar.classList.add('show');}
+    else bar.classList.remove('show');
+  },{root:main,rootMargin:`-${tbH}px 0px 0px 0px`,threshold:0});
+  _walletHeroIO.observe(hero);
+  window.addEventListener('resize',()=>{if(bar.classList.contains('show'))positionCompactBar();});
 }
 function initWalletForm(){
   initWalletCcySwitch();
@@ -1458,6 +1470,7 @@ function showPage(id){
   document.querySelectorAll('.nav-item[data-page]').forEach(n=>n.classList.toggle('on',n.dataset.page===id));
   $('#pg-title').textContent=PAGE_META[id].t;$('#pg-desc').textContent=PAGE_META[id].d;
   window.scrollTo?.(0,0);$('.main')?.scrollTo?.(0,0);
+  if(id!=='wallet'){const b=$('#wallet-hero-compact');if(b)b.classList.remove('show');}   // 離開錢包頁不殘留摘要列
   if(id==='wallet')loadWallet();
   else if(id==='settings')loadSettings();
 }

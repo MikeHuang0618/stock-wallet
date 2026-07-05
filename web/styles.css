@@ -484,22 +484,25 @@ textarea.ai-prompt:focus{border-color:rgba(232,195,122,.5)}
 @media(max-width:1000px){.grid2{grid-template-columns:1fr}.months{grid-template-columns:repeat(3,1fr)}}
 
 /* Wallet Enhancements */
-.sticky-hero{position:sticky;top:69px;z-index:15;background:linear-gradient(180deg,rgba(14,15,19,.97),rgba(14,15,19,.65));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:14px 28px 14px 28px;margin:-14px -28px 14px -28px;border-bottom:1px solid var(--panel-brd);transition:padding .18s ease}
-/* 收合狀態(捲動後):隱藏標題/hero卡/各幣別列,改顯示單列緊湊摘要,騰出內容區 */
+/* 資金概況回歸一般文流、自然捲走(不再 position:sticky,避免折疊回饋迴圈) */
+.sticky-hero{background:linear-gradient(180deg,rgba(14,15,19,.97),rgba(14,15,19,.65));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);padding:14px 28px 14px 28px;margin:-14px -28px 14px -28px;border-bottom:1px solid var(--panel-brd)}
 /* 各幣別列固定 4 欄(寬)/ 2 欄(窄):4 張卡永遠成雙,不出現 3+1 孤兒 */
 #wallet-ccy-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:1180px){#wallet-ccy-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.hero-compact{display:none}
-#wallet-sticky.collapsed{padding-top:8px;padding-bottom:8px}
-#wallet-sticky.collapsed #wallet-hero-title,
-#wallet-sticky.collapsed #wallet-hero-grid,
-#wallet-sticky.collapsed #wallet-ccy-grid{display:none}
-#wallet-sticky.collapsed .hero-compact{display:flex;flex-wrap:wrap;align-items:center;gap:16px}
-.hero-compact .hc-item{display:flex;align-items:baseline;gap:6px}
-.hero-compact .hc-l{font-size:11px;color:var(--muted)}
-.hero-compact .hc-v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
-.hero-compact .hc-ccy{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--panel-brd);padding:2px 9px;border-radius:7px}
-[data-perf="low"] .sticky-hero{transition:none}
+/* 資金摘要固定疊加列:position:fixed 不佔版面高度,只切 opacity,徹底無捲動回饋迴圈。
+   由 IntersectionObserver(觀察 hero-grid)控制顯示,不用 scrollTop 閾值。 */
+.hero-compact-bar{position:fixed;z-index:14;left:0;top:0;box-sizing:border-box;
+  background:rgba(16,18,24,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--panel-brd);padding:9px 28px;
+  display:flex;flex-wrap:nowrap;align-items:center;gap:18px;overflow:hidden;
+  opacity:0;visibility:hidden;pointer-events:none;transition:opacity .18s ease}
+.hero-compact-bar.show{opacity:1;visibility:visible}
+.hero-compact-bar .hc-item{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.hero-compact-bar .hc-l{font-size:11px;color:var(--muted)}
+.hero-compact-bar .hc-v{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums}
+.hero-compact-bar .hc-ccy{margin-left:auto;font-size:11px;color:var(--muted);border:1px solid var(--panel-brd);padding:2px 9px;border-radius:7px}
+[data-perf="low"] .hero-compact-bar{transition:none}
+[data-theme="light"] .hero-compact-bar{background:rgba(244,246,248,.96)}
 [data-theme="light"] .sticky-hero { background:linear-gradient(180deg,rgba(244,246,248,.95),rgba(244,246,248,.6)); }
 .qcard.hero{background:linear-gradient(135deg,rgba(232,195,122,.12),rgba(232,195,122,.02));border-color:rgba(232,195,122,.5);box-shadow:0 4px 20px rgba(232,195,122,.15);z-index:2}
 .qcard.hero .row{flex-wrap:wrap}
