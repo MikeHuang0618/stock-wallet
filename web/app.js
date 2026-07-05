@@ -1,7 +1,7 @@
 const $ = s => document.querySelector(s);
 const api = () => window.pywebview.api;
 const TYPE_NAMES={CPI:'CPI 通膨',NFP:'非農就業',FOMC:'FOMC 利率',EARN:'個股財報',
-  TWR:'央行利率決議',TWCPI:'台灣 CPI'};
+  TWR:'央行利率決議',TWCPI:'台灣 CPI',CUSTOM:'自訂事件'};
 const OVERLAYS=[
   {id:'sma_5', label:'MA5',  color:'#5bc0de'},
   {id:'sma_10',label:'MA10', color:'#c792ea'},
@@ -491,8 +491,11 @@ function renderAlerts(){
   rows.sort((x,y)=>(y.hit?1:0)-(x.hit?1:0));   // 觸發者在前(V8 穩定排序保留同狀態原序)
   box.innerHTML=rows.map(({a,i,now,hit})=>{
     const meta=goldMeta(a.tk);
+    // 非當前市場的警示加小字市場標籤(警示清單跨市場共用)
+    const am=GOLD_TW.some(g=>g.sym===a.tk)?'tw':(GOLD_US.some(g=>g.sym===a.tk)?'us':null);
+    const mktTag=(am&&am!==STATE.market)?`<span class="al-mkt">${am==='tw'?'台股':'美股'}</span>`:'';
     const condTxt=a.cond==='above'?'突破 ≥':'跌破 ≤';
-    return `<div class="al ${hit?'hit':''}"><span class="k">${esc(meta.short)}</span><span class="cond">${condTxt}</span>
+    return `<div class="al ${hit?'hit':''}"><span class="k">${esc(meta.short)}${mktTag}</span><span class="cond">${condTxt}</span>
       <span class="lvl">${fmt(a.lvl)}</span><span class="now">現價<br>${now==null?'—':fmt(now)}</span>
       <span class="st ${hit?'fire':'wait'}">${hit?'● 已觸發':'等待中'}</span><span class="x" data-i="${i}">✕</span></div>`;
   }).join('');
@@ -960,9 +963,9 @@ function money(n,ccy,dec){
   const s=ccy==='TWD'?'NT$':'$',d=dec!=null?dec:2;
   return s+Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 }
-function signMoney(n,ccy){
+function signMoney(n,ccy,dec){
   if(n==null||isNaN(n))return'—';
-  const s=ccy==='TWD'?'NT$':'$',d=2;
+  const s=ccy==='TWD'?'NT$':'$',d=dec!=null?dec:2;
   return (n>=0?'+':'-')+s+Number(Math.abs(n)).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 }
 // 碎股數量:最多 6 位小數、去尾零(券商碎股 5-6 位),整數不顯示小數點。
@@ -1011,7 +1014,8 @@ function renderWallet(){
     else{const k=fx||0;totDep=T.total_deposits+U.total_deposits*k;totPv=T.portfolio_value+U.portfolio_value*k;}
   }
   const totRet=(combinable&&totDep>0)?(totPv-totDep)/totDep*100:0;
-  const totDep$=combinable?money(totDep,ccy):'—',totPv$=combinable?money(totPv,ccy):'—';
+  const heroDec=ccy==='TWD'?0:2;   // hero 大額卡 TWD 取 0 位;明細列維持 2 位(分層精度)
+  const totDep$=combinable?money(totDep,ccy,heroDec):'—',totPv$=combinable?money(totPv,ccy,heroDec):'—';
   const convLabel=ccy==='TWD'?'折合台幣':'折合美金';
   const fxNote=fx?(' · 匯率 1 USD≈'+fmt(fx,3)+' TWD'):(combinable?'':' · ⚠ 匯率無法取得,暫不換算');
   // ----- 頂列:當日損益 (依所選幣別 = 美股/台股) + 總計 + 美金 + 台幣 -----
@@ -1021,7 +1025,7 @@ function renderWallet(){
   const usdCash=U.portfolio_value-U.total_value,twdCash=T.portfolio_value-T.total_value,selCash=b.portfolio_value-b.total_value;
   markNoAnim($('#wallet-hero-grid'));
   $('#wallet-hero-grid').innerHTML=`
-    <div class="qcard hero daychange"><div class="nm">當日損益 Day Change · ${dcMkt}</div><div class="row"><div class="price ${_dcls(dc)}">${signMoney(dc,ccy)}</div><div class="chg ${_dcls(dc)}" style="white-space:nowrap;flex-shrink:0">${_arr(dcp)} ${fmt(Math.abs(dcp))}%</div></div><div class="ccy-sub">${dcDateNote}</div></div>
+    <div class="qcard hero daychange"><div class="nm">當日損益 Day Change · ${dcMkt}</div><div class="row"><div class="price ${_dcls(dc)}">${signMoney(dc,ccy,heroDec)}</div><div class="chg ${_dcls(dc)}" style="white-space:nowrap;flex-shrink:0">${_arr(dcp)} ${fmt(Math.abs(dcp))}%</div></div><div class="ccy-sub">${dcDateNote}</div></div>
     <div class="qcard hero"><div class="nm">總投入資金</div><div class="row"><div class="price">${totDep$}</div></div><div class="ccy-sub">${convLabel}</div></div>
     <div class="qcard hero"><div class="nm">持有總錢包價值</div><div class="row"><div class="price ${_dcls(totRet)}">${totPv$}</div>${combinable?`<div class="chg ${_dcls(totRet)}" style="white-space:nowrap;flex-shrink:0">${_arr(totRet)} ${fmt(Math.abs(totRet||0))}%</div>`:''}</div><div class="ccy-sub">${convLabel}${fxNote}</div></div>`;
   markNoAnim($('#wallet-ccy-grid'));
@@ -1032,10 +1036,10 @@ function renderWallet(){
     <div class="qcard"><div class="nm">🇹🇼 持有台幣錢包價值</div><div class="row"><div class="price ${_dcls(T.portfolio_return_pct)}">${money(T.portfolio_value,'TWD')}</div><div class="chg ${_dcls(T.portfolio_return_pct)}">${_arr(T.portfolio_return_pct)} ${fmt(Math.abs(T.portfolio_return_pct||0))}%</div></div></div>`;
   // 收合列(捲動時顯示):當日/總投入/總價值/現金 + 幣別
   $('#wallet-hero-compact').innerHTML=`
-    <span class="hc-item"><span class="hc-l">當日</span><span class="hc-v ${_dcls(dc)}">${signMoney(dc,ccy)}</span></span>
+    <span class="hc-item"><span class="hc-l">當日</span><span class="hc-v ${_dcls(dc)}">${signMoney(dc,ccy,heroDec)}</span></span>
     <span class="hc-item"><span class="hc-l">總投入</span><span class="hc-v">${totDep$}</span></span>
     <span class="hc-item"><span class="hc-l">總價值</span><span class="hc-v ${_dcls(totRet)}">${totPv$}</span></span>
-    <span class="hc-item"><span class="hc-l">現金</span><span class="hc-v">${money(selCash,ccy)}</span></span>
+    <span class="hc-item"><span class="hc-l">現金</span><span class="hc-v">${money(selCash,ccy,heroDec)}</span></span>
     <span class="hc-ccy">${ccy==='TWD'?'台幣':'美金'}</span>`;
   // ----- 持股比例:美股 / 台股 兩個圓餅 + 佔總錢包比例 -----
   renderWalletPie('#wallet-pie-usd',U.holdings,'USD');
@@ -1219,7 +1223,8 @@ function openRealizedModal(){
       <span class="rp-sym">${esc(d.symbol)}</span>
       <span class="rp-nm">${esc(d.name||'')}${d.closed?'<span class="rp-closed">已平倉</span>':''}</span>
       <span class="rp-val ${_dcls(d.realized_pnl)}">${signMoney(d.realized_pnl,ccy)}</span>
-    </div>`).join('');
+    </div>`).join('')
+    +`<div class="rpnl-row rpnl-total"><span class="rp-sym">合計</span><span class="rp-nm"></span><span class="rp-val ${_dcls((b&&b.total_realized_pnl)||0)}">${signMoney((b&&b.total_realized_pnl)||0,ccy)}</span></div>`;
   $('#rpnl-modal').classList.add('show');
 }
 function closeRealizedModal(){$('#rpnl-modal').classList.remove('show');}
