@@ -23,9 +23,12 @@ unrealized P&L. Optional AI analysis via Claude, OpenAI, or Gemini (bring your o
   custom date ranges; interactive crosshair.
 - **Major events** — CPI / non-farm payrolls / FOMC calendar, watched-stock earnings
   dates, and user-defined custom events.
-- **Wallet** — SQLite-backed holdings (average-cost), buy/sell transactions,
-  deposits/withdrawals, USD/TWD currency blocks with live FX, holdings pie, and
-  portfolio value / daily-P&L history charts.
+- **Wallet** — SQLite-backed holdings (average-cost), buy/sell transactions with fees,
+  cash & stock dividends, splits/adjustments, deposits/withdrawals, USD/TWD currency
+  blocks with live FX, holdings pie, and portfolio-value / daily-P&L history charts.
+  History is recorded as immutable **daily snapshots** (so a delisted ticker can't rewrite
+  the past), with a combined USD net-worth curve, manually-valued non-market assets,
+  **XIRR**, monthly/yearly reports, broker-CSV import, and once-a-day automatic DB backups.
 - **Gold signals** — GLL / UGL calendar and key-price alerts with Windows toast
   notifications.
 - **AI analysis** *(optional)* — buy / watch / sell + target price from your chosen
@@ -121,7 +124,8 @@ side effects); I/O is isolated in `api.py`. This keeps tests fast and the number
 
 ## Data storage & privacy
 
-- All app data lives **locally** in `%APPDATA%\StockWallet\`: `wallet.db` (transactions),
+- All app data lives **locally** in `%APPDATA%\StockWallet\`: `wallet.db` (transactions,
+  deposits, snapshots, manual assets), daily copies under `backups\`,
   `watchlist.json`, `alerts.json`, `events.json`, `ai_config.json`, `ai_cache.json`.
 - **No telemetry, no accounts, no data collection.** Nothing is sent anywhere except
   (a) requests to Yahoo Finance for quotes and (b), only if you enable AI, requests to the

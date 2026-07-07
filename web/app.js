@@ -953,9 +953,50 @@ async function loadWallet(){
   if(!w.data)$('#wallet-summary').innerHTML='<div class="qcard"><div class="nm">載入中…</div></div>';  // 僅首次顯示;已有資料時靜默更新
   try{w.data=await api().wallet_holdings();}catch(e){w.data=null;}
   renderWallet();
+  try{w.manual=await api().manual_asset_list();}catch(e){w.manual=null;}
+  renderManualAssets();
   try{w.history=await api().wallet_history();}catch(e){w.history=null;}
   renderWalletCharts();
+  try{w.report=await api().wallet_report(w.reportPeriod||'monthly');}catch(e){w.report=null;}
+  renderReport();
   w.loading=false;
+}
+function renderManualAssets(){
+  const list=STATE.wallet.manual||[],box=$('#manual-list');if(!box)return;
+  $('#ma-count').textContent=`${list.length} 項`;
+  if(!list.length){box.innerHTML='<div class="empty">尚無其他資產</div>';return;}
+  box.innerHTML=list.map(a=>{
+    const ccy=a.currency||'USD';
+    return `<div class="txrow">
+      <span class="side ${ccy==='TWD'?'adj':'div'}">${ccy==='TWD'?'台幣':'美金'}</span>
+      <span style="min-width:120px;font-weight:800">${esc(a.name)}</span>
+      <span class="g tx-amt">${a.value==null?'未估值':money(a.value,ccy)}</span>
+      <span class="g" style="min-width:92px">${a.date?esc(a.date):''}</span>
+      <button class="mini-btn" data-maval="${a.id}" data-maccy="${ccy}">更新估值</button>
+      <span class="del" data-madel="${a.id}">🗑 刪除</span></div>`;}).join('');
+  box.querySelectorAll('[data-madel]').forEach(bn=>bn.onclick=()=>armDelete(bn,async()=>{
+    await api().manual_asset_delete(+bn.dataset.madel);loadWallet();}));
+  box.querySelectorAll('[data-maval]').forEach(bn=>bn.onclick=async()=>{
+    const v=prompt('輸入最新估值:');if(v==null||v==='')return;
+    const r=await api().manual_asset_set_value(+bn.dataset.maval,v,STATE.today||null);
+    if(r.ok){toast('已更新估值');loadWallet();}else toast(r.error||'更新失敗');});
+}
+function renderReport(){
+  const rep=STATE.wallet.report,ccy=STATE.wallet.ccy,box=$('#report-body');if(!box)return;
+  const r=rep?rep[ccy]:null;
+  if(!r||(!r.periods.length&&!r.realized_years.length)){box.innerHTML='<div class="empty">尚無資料</div>';return;}
+  const pRows=r.periods.slice().reverse().map(p=>`<tr>
+    <td>${esc(p.period)}</td><td class="num">${money(p.start_value,ccy)}</td>
+    <td class="num">${money(p.end_value,ccy)}</td><td class="num">${money(p.net_deposit,ccy)}</td>
+    <td class="num ${_dcls(p.pnl)}">${signMoney(p.pnl,ccy)}</td>
+    <td class="num ${p.return_pct==null?'':_dcls(p.return_pct)}">${p.return_pct==null?'—':(_arr(p.return_pct)+' '+fmt(Math.abs(p.return_pct))+'%')}</td></tr>`).join('');
+  const yRows=r.realized_years.slice().reverse().map(y=>`<tr>
+    <td>${esc(y.year)}</td><td class="num ${_dcls(y.realized_pnl)}">${signMoney(y.realized_pnl,ccy)}</td>
+    <td class="num ${y.dividends>0?'up':''}">${money(y.dividends,ccy)}</td></tr>`).join('');
+  box.innerHTML=`
+    <table class="rp-table"><thead><tr><th>期間</th><th>期初</th><th>期末</th><th>淨投入</th><th>損益</th><th>報酬率</th></tr></thead><tbody>${pRows||'<tr><td colspan="6">—</td></tr>'}</tbody></table>
+    <div class="rp-sub">年度已實現損益(含股息)</div>
+    <table class="rp-table"><thead><tr><th>年度</th><th>已實現損益</th><th>股息</th></tr></thead><tbody>${yRows||'<tr><td colspan="3">—</td></tr>'}</tbody></table>`;
 }
 function money(n,ccy,dec){
   if(n==null||isNaN(n))return'—';
@@ -1052,13 +1093,17 @@ function renderWallet(){
   // ----- 以下依所選幣別呈現 -----
   $('#wallet-ccy-label').textContent=ccy==='TWD'?'台幣 TWD':'美金 USD';
   const pnl=b.total_pnl,pct=b.total_cost?pnl/b.total_cost*100:0,rp=b.total_realized_pnl||0;
+  const div=b.total_dividends||0,xirr=b.xirr;
+  const xirrStr=(xirr==null)?'—':(_arr(xirr)+' '+fmt(Math.abs(xirr))+'%');
   markNoAnim($('#wallet-summary'));
   $('#wallet-summary').innerHTML=`
     <div class="qcard"><div class="nm">總市值</div><div class="row"><div class="price">${money(b.total_value,ccy)}</div></div></div>
-    <div class="qcard" title="= 投入資金 − 持倉成本 + 已實現損益"><div class="nm">現金餘額</div><div class="row"><div class="price">${money(selCash,ccy)}</div></div></div>
+    <div class="qcard" title="= 投入資金 − 持倉成本 + 已實現損益 + 累計股息"><div class="nm">現金餘額</div><div class="row"><div class="price">${money(selCash,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">總成本</div><div class="row"><div class="price">${money(b.total_cost,ccy)}</div></div></div>
     <div class="qcard"><div class="nm">未實現損益</div><div class="row"><div class="price ${_dcls(pnl)}">${signMoney(pnl,ccy)}</div><div class="chg ${_dcls(pnl)}">${_arr(pnl)} ${fmt(Math.abs(pct))}%</div></div></div>
     <div class="qcard clk" data-rpnl tabindex="0" role="button"><div class="nm">已實現損益 ›</div><div class="row"><div class="price ${_dcls(rp)}">${signMoney(rp,ccy)}</div></div></div>
+    <div class="qcard" title="累計收到的現金股利(已計入報酬)"><div class="nm">累計股息</div><div class="row"><div class="price ${div>0?'up':''}">${money(div,ccy)}</div></div></div>
+    <div class="qcard" title="年化內部報酬率;現金流含出入金與期末淨值,持有 < 30 天顯示「—」"><div class="nm">年化報酬 XIRR</div><div class="row"><div class="price ${xirr==null?'':_dcls(xirr)}">${xirrStr}</div></div></div>
     <div class="qcard"><div class="nm">持有檔數</div><div class="row"><div class="price">${b.holdings.length}</div></div></div>`;
   $('#wallet-hcount').textContent=`${b.holdings.length} 檔`;
   const hb=$('#wallet-holdings');
@@ -1096,11 +1141,20 @@ function renderWallet(){
     const groups=[],gi={};
     txs.forEach(t=>{const dt=t.date||'—';if(!(dt in gi)){gi[dt]=groups.length;groups.push({date:dt,items:[]});}groups[gi[dt]].items.push(t);});
     tb.innerHTML=groups.map(gp=>{
-      const rows=gp.items.map(t=>{const buy=t.side?t.side==='buy':t.quantity>=0;
-        return `<div class="txrow"><span class="side ${buy?'buy':'sell'}">${buy?'買':'賣'}</span>
+      const rows=gp.items.map(t=>{
+        const side=t.side||(t.quantity>=0?'buy':'sell');
+        const meta=({buy:{c:'buy',l:'買'},sell:{c:'sell',l:'賣'},dividend:{c:'div',l:'股利'},
+          stock_dividend:{c:'div',l:'配股'},adjust:{c:'adj',l:'調整'}})[side]||{c:'buy',l:'買'};
+        const fee=t.fee?` · 費 ${money(t.fee,ccy)}`:'';
+        let mid,amt;
+        if(side==='dividend'){mid=`現金股利${fee}`;amt=money(t.price,ccy);}
+        else if(side==='stock_dividend'){mid=`配發 ${qtyFmt(Math.abs(t.quantity))} 股`;amt='—';}
+        else if(side==='adjust'){mid=`調整 ${t.quantity>=0?'+':''}${qtyFmt(t.quantity)} 股`;amt='—';}
+        else{mid=`${qtyFmt(Math.abs(t.quantity))} 股 @ ${money(t.price,ccy)}${fee}`;amt=money(Math.abs(t.quantity)*t.price,ccy);}
+        return `<div class="txrow"><span class="side ${meta.c}">${meta.l}</span>
           <span style="min-width:56px;font-weight:800">${esc(t.symbol)}</span>
-          <span class="g">${qtyFmt(Math.abs(t.quantity))} 股 @ ${money(t.price,ccy)}</span>
-          <span class="g tx-amt">${money(Math.abs(t.quantity)*t.price,ccy)}</span>
+          <span class="g">${mid}</span>
+          <span class="g tx-amt">${amt}</span>
           <span class="del" data-del="${t.id}">🗑 刪除</span></div>`;}).join('');
       return `<div class="txgroup"><div class="txgroup-head"><span class="txgroup-date">${esc(gp.date)}</span><span class="txgroup-count">${gp.items.length} 筆</span></div><div class="txgroup-body">${rows}</div></div>`;
     }).join('');
@@ -1110,17 +1164,31 @@ function renderWallet(){
 }
 function renderWalletCharts(){
   const ccy=STATE.wallet.ccy,label=ccy==='TWD'?'台幣':'美金';
-  const hAll=STATE.wallet.history,h=hAll?hAll[ccy]:null;
+  const hAll=STATE.wallet.history;
+  const mode=STATE.wallet.histMode||'ccy';
   const vc=$('#wallet-value-chart'),pc=$('#wallet-pnl-chart');
-  $('#wv-title').textContent=`歷史${label}錢包價值`;
-  $('#wpnl-title').textContent=`歷史${label}每日交易損益(按市值計)`;
   STATE.wallet.charts=[];
-  if(!h||!h.dates||!h.dates.length){vc.innerHTML='<div class="chart-msg">尚無資料</div>';pc.innerHTML='<div class="chart-msg">尚無資料</div>';return;}
-  const labels=h.dates.map(x=>x.slice(2)),color=ccy==='TWD'?'#5bc0de':'#e8c37a';
-  mountWalletChart(vc,{height:200,labels,lines:[{name:`持有${label}錢包價值`,color,values:h.portfolio_value,w:1.8}],fmtY:fmtVol});
-  $('#wv-legend').innerHTML=legendHTML([{name:`持有${label}錢包價值`,color,val:fmtVol(lastVal(h.portfolio_value))}]);
-  const colors=h.daily_pnl.map(v=>v>=0?upColor():downColor());
-  drawStaticChart(pc,{height:180,labels,bars:{values:h.daily_pnl,colors,baseline:'zero'},zeroLine:true,fmtY:fmtVol});
+  // ----- 上圖:錢包淨值。分幣別 = 所選幣別;總淨值 = 跨幣別折美金合併曲線 -----
+  const isTotal=mode==='total';
+  const vh=isTotal?(hAll?hAll.TOTAL:null):(hAll?hAll[ccy]:null);
+  const vLabel=isTotal?'總淨值 (美金)':`持有${label}錢包價值`;
+  const vColor=isTotal?'#8fd19e':(ccy==='TWD'?'#5bc0de':'#e8c37a');
+  $('#wv-title').textContent=isTotal?'歷史總淨值(折合美金)':`歷史${label}錢包價值`;
+  if(vh&&vh.dates&&vh.dates.length){
+    const labels=vh.dates.map(x=>x.slice(2));
+    mountWalletChart(vc,{height:200,labels,lines:[{name:vLabel,color:vColor,values:vh.portfolio_value,w:1.8}],fmtY:fmtVol});
+    $('#wv-legend').innerHTML=legendHTML([{name:vLabel,color:vColor,val:fmtVol(lastVal(vh.portfolio_value))}]);
+    if(vh.reconcile_warning){const rw=vh.reconcile_warning;
+      $('#wv-legend').innerHTML+=`<span class="warn-pill" title="快照與回算在 ${rw.date} 淨值不一致,已採用快照(記錄值)">⚠ ${rw.date} 已依快照</span>`;}
+  }else{vc.innerHTML='<div class="chart-msg">尚無資料</div>';$('#wv-legend').innerHTML='';}
+  // ----- 下圖:每日交易損益(始終依所選幣別的持倉市值) -----
+  const h=hAll?hAll[ccy]:null;
+  $('#wpnl-title').textContent=`歷史${label}每日交易損益(按市值計)`;
+  if(h&&h.dates&&h.dates.length){
+    const labels=h.dates.map(x=>x.slice(2));
+    const colors=h.daily_pnl.map(v=>v>=0?upColor():downColor());
+    drawStaticChart(pc,{height:180,labels,bars:{values:h.daily_pnl,colors,baseline:'zero'},zeroLine:true,fmtY:fmtVol});
+  }else{pc.innerHTML='<div class="chart-msg">尚無資料</div>';}
 }
 function drawStaticChart(box,o){
   const g=chartGeo(o,box.clientWidth);
@@ -1176,7 +1244,9 @@ function setWalletCcy(c){
   try{localStorage.setItem('walletCcy',c);}catch(e){}
   applyWalletCcyUI();
   if(STATE.wallet.data)renderWallet();
+  renderManualAssets();
   renderWalletCharts();
+  renderReport();
   // 反向同步全域市場:USD→us, TWD→tw
   if(!_syncing){
     _syncing=true;
@@ -1262,18 +1332,62 @@ function initWalletForm(){
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#rpnl-modal').classList.contains('show'))closeRealizedModal();});
   window.addEventListener('resize',()=>{if(STATE.page==='wallet')syncHoldingsHeight();});
   $('#w-date').value=(STATE.today||new Date().toISOString().slice(0,10));
+  // 依交易類別調整欄位:股利/配股/拆股不需要同時填「數量+成交價+費用」。
+  const applySideFields=()=>{
+    const side=$('#w-side').value,qty=$('#w-qty'),price=$('#w-price'),fee=$('#w-fee');
+    const dividend=side==='dividend',shares=side==='stock_dividend'||side==='adjust';
+    qty.disabled=dividend;price.disabled=shares;fee.disabled=dividend||shares;
+    qty.placeholder=side==='adjust'?'股數(合股填負)':(dividend?'—':'數量');
+    price.placeholder=dividend?'配息總額':(shares?'—':'成交價');
+    [qty,price,fee].forEach(el=>el.style.opacity=el.disabled?.45:1);
+  };
+  $('#w-side').addEventListener('change',applySideFields);applySideFields();
+  $('#w-fee-est').onclick=async()=>{
+    const price=$('#w-price').value,qty=$('#w-qty').value,side=$('#w-side').value;
+    if(price===''||qty===''){toast('請先填數量與成交價');return;}
+    const r=await api().estimate_fee(price,qty,side==='sell'?'sell':'buy');
+    if(r&&r.ok){$('#w-fee').value=r.fee;toast('已帶入台股預估稅費,可自行調整');}
+  };
   $('#w-add').onclick=async()=>{
-    const sym=$('#w-sym').value.trim(),qty=$('#w-qty').value,price=$('#w-price').value,dt=$('#w-date').value;
-    const side=$('#w-side').value;
-    if(!sym||qty===''||price===''||!dt){toast('請填寫完整');return;}
+    const sym=$('#w-sym').value.trim(),qty=$('#w-qty').value,price=$('#w-price').value;
+    const dt=$('#w-date').value,side=$('#w-side').value,fee=$('#w-fee').value||0;
+    if(!sym||!dt){toast('請填寫代號與日期');return;}
+    if(side==='dividend'&&price===''){toast('請在成交價欄填配息總額');return;}
+    if(side!=='dividend'&&qty===''){toast('請填寫數量');return;}
+    if((side==='buy'||side==='sell')&&price===''){toast('請填寫成交價');return;}
     const name=(STATE.wallet.symName&&STATE.wallet.symName)||'';
-    const r=await api().wallet_add(sym,name,qty,price,dt,side);
+    const r=await api().wallet_add(sym,name,qty||0,price||0,dt,side,fee);
     if(!r.ok){toast(r.error||'新增失敗');return;}
-    $('#w-sym').value='';$('#w-qty').value='';$('#w-price').value='';STATE.wallet.symName='';
+    $('#w-sym').value='';$('#w-qty').value='';$('#w-price').value='';$('#w-fee').value='';STATE.wallet.symName='';
     // 自動切換到該標的所屬幣別,方便立即檢視
     setWalletCcy(/\.TWO?$/i.test(sym.toUpperCase())?'TWD':'USD');
     toast('已新增交易');loadWallet();
   };
+  // 淨值圖:分幣別 ↔ 總淨值(美金)切換
+  const wvMode=$('#wv-mode');
+  if(wvMode)wvMode.querySelectorAll('button').forEach(bn=>bn.onclick=()=>{
+    STATE.wallet.histMode=bn.dataset.hmode;
+    wvMode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===bn));
+    renderWalletCharts();
+  });
+  // 其他資產(手動估值)新增
+  const maDate=$('#ma-date');if(maDate)maDate.value=(STATE.today||new Date().toISOString().slice(0,10));
+  const maAdd=$('#ma-add');
+  if(maAdd)maAdd.onclick=async()=>{
+    const name=$('#ma-name').value.trim(),ccy=$('#ma-ccy').value,val=$('#ma-value').value,dt=$('#ma-date').value;
+    if(!name){toast('請輸入資產名稱');return;}
+    const r=await api().manual_asset_add(name,ccy,val===''?null:val,dt||null);
+    if(!r.ok){toast(r.error||'新增失敗');return;}
+    $('#ma-name').value='';$('#ma-value').value='';toast('已新增其他資產');loadWallet();
+  };
+  // 報表期間切換(月報 / 年報)
+  const rpSeg=$('#rp-period');
+  if(rpSeg)rpSeg.querySelectorAll('button').forEach(bn=>bn.onclick=async()=>{
+    STATE.wallet.reportPeriod=bn.dataset.rp;
+    rpSeg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===bn));
+    try{STATE.wallet.report=await api().wallet_report(bn.dataset.rp);}catch(e){STATE.wallet.report=null;}
+    renderReport();
+  });
   $('#dep-date').value=(STATE.today||new Date().toISOString().slice(0,10));
   const depCcySel=$('#dep-ccy');if(depCcySel){depCcySel.value=STATE.wallet.ccy;syncCustomSelect&&syncCustomSelect(depCcySel);}
   $('#dep-add').onclick=async()=>{
@@ -1303,6 +1417,16 @@ function initWalletForm(){
     depArrow.style.transform=willCollapse?'rotate(-90deg)':'rotate(0deg)';
     localStorage.setItem('walletDepCollapsed',willCollapse?'1':'0');
   };
+  const maToggle=$('#ma-toggle'),maBody=$('#ma-body'),maArrow=$('#ma-arrow');
+  if(maToggle){
+    if(localStorage.getItem('walletMaCollapsed')==='1'){maBody.classList.add('collapsed');maArrow.style.transform='rotate(-90deg)';}
+    maToggle.onclick=()=>{
+      const willCollapse=!maBody.classList.contains('collapsed');
+      maBody.classList.toggle('collapsed',willCollapse);
+      maArrow.style.transform=willCollapse?'rotate(-90deg)':'rotate(0deg)';
+      localStorage.setItem('walletMaCollapsed',willCollapse?'1':'0');
+    };
+  }
 }
 
 /* ---------- settings ---------- */
@@ -1393,6 +1517,32 @@ function initSettings(){
     if(STATE.wallet.data)loadWallet();
     toast('已匯入，App 已更新');
   };
+  // 備份 / 還原 / CSV 匯入
+  const renderBackups=async()=>{
+    let list=[];try{list=await api().list_backups();}catch(e){list=[];}
+    const box=$('#backup-list');if(!box)return;
+    if(!list.length){box.textContent='尚無備份。';return;}
+    box.innerHTML='最近備份:'+list.slice(0,6).map(b=>
+      `<button class="mini-btn" data-restore="${esc(b.path)}" title="還原此備份">${esc(b.name)}</button>`).join(' ');
+    box.querySelectorAll('[data-restore]').forEach(bn=>bn.onclick=async()=>{
+      if(!confirm('還原此備份會覆蓋目前資料(還原前會自動另存現況)。確定?'))return;
+      const r=await api().restore_backup(bn.dataset.restore);
+      if(r.ok){toast('已還原,重新載入錢包');if(STATE.wallet.data)loadWallet();}
+      else toast(r.error||'還原失敗');});
+  };
+  const bkNow=$('#backup-now-btn');
+  if(bkNow)bkNow.onclick=async()=>{$('#backup-status').textContent='備份中…';
+    const r=await api().auto_backup();
+    $('#backup-status').textContent=r.ok?(r.skipped?'今日已備份':'已備份'):('備份:'+(r.error||'失敗'));renderBackups();};
+  const bkFolder=$('#backup-folder-btn');
+  if(bkFolder)bkFolder.onclick=()=>api().open_backups_folder();
+  const csvBtn=$('#csv-import-btn');
+  if(csvBtn)csvBtn.onclick=async()=>{$('#backup-status').textContent='解析 CSV…';
+    let r;try{r=await api().wallet_import_csv();}catch(e){r={ok:false,error:String(e)};}
+    if(!r.ok){$('#backup-status').textContent='CSV:'+(r.error||'失敗');return;}
+    $('#backup-status').textContent=`已匯入 ${r.inserted} 筆,略過重複 ${r.skipped} 筆`+((r.errors&&r.errors.length)?`,${r.errors.length} 列有誤`:'');
+    if(STATE.wallet.data)loadWallet();toast('CSV 匯入完成');};
+  renderBackups();
   const btnClearTemp = $('#btn-clear-temp');
   if(btnClearTemp){
     btnClearTemp.onclick = async ()=>{

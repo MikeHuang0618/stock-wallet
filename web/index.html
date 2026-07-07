@@ -251,18 +251,25 @@
         <div class="spacer"></div>
         <div class="panel merged-panel" id="tx-panel">
           <h2><span class="dot"></span>新增交易 / 持倉</h2>
-          <div class="wtx-form">
+          <div class="wtx-form" style="grid-template-columns:1.2fr .85fr .8fr .9fr .9fr 1fr auto">
             <div class="w-sym-wrap">
               <input id="w-sym" placeholder="搜尋代號 (如 AAPL、2330.TW)" autocomplete="off">
               <div class="results" id="w-results"></div>
             </div>
-            <select id="w-side"><option value="buy">買進</option><option value="sell">賣出</option></select>
-            <input id="w-qty" type="number" step="any" min="0" placeholder="數量">
+            <select id="w-side">
+              <option value="buy">買進</option>
+              <option value="sell">賣出</option>
+              <option value="dividend">現金股利</option>
+              <option value="stock_dividend">配股</option>
+              <option value="adjust">拆股/調整</option>
+            </select>
+            <input id="w-qty" type="number" step="any" placeholder="數量">
             <input id="w-price" type="number" step="any" min="0" placeholder="成交價">
+            <input id="w-fee" type="number" step="any" min="0" placeholder="費用/稅">
             <input id="w-date" type="date">
             <button class="btn gold" id="w-add">＋ 新增</button>
           </div>
-          <div class="ai-note">代號可直接搜尋確認(美股 / 台股皆可,台股請含 .TW)。選「賣出」的紀錄會保留,用於計算已實現/未實現損益;下方「刪除」則會把該筆紀錄整筆移除。</div>
+          <div class="ai-note" id="w-form-hint">代號可直接搜尋確認(美股 / 台股皆可,台股請含 .TW)。「賣出」紀錄會保留以計算損益;「現金股利」在成交價欄填配息總額;「配股/拆股」在數量欄填股數(合股填負數)。台股可按「≈稅費」帶入預估手續費與交易稅。<button type="button" class="mini-btn" id="w-fee-est" style="margin-left:6px">≈稅費</button></div>
           <div class="merged-sub tx-toggle" id="tx-toggle">
             <span class="sub-dot"></span>交易紀錄<span class="count" id="wallet-txcount"></span>
             <span class="arrow" id="tx-arrow">▼</span>
@@ -273,8 +280,43 @@
         </div>
 
         <div class="spacer"></div>
+        <div class="panel merged-panel" id="manual-panel">
+          <h2><span class="dot"></span>其他資產(手動估值)</h2>
+          <div class="wtx-form" style="grid-template-columns:1.3fr .85fr 1fr 1fr auto">
+            <input id="ma-name" placeholder="名稱 (如 定存、儲蓄險、實體黃金)" autocomplete="off">
+            <select id="ma-ccy"><option value="USD">美金 USD</option><option value="TWD">台幣 TWD</option></select>
+            <input id="ma-value" type="number" step="any" min="0" placeholder="目前估值">
+            <input id="ma-date" type="date">
+            <button class="btn gold" id="ma-add">＋ 新增</button>
+          </div>
+          <div class="ai-note">記錄無行情的資產(定存、保險、房產、實體黃金等)的當前估值,計入「淨資產」與總淨值曲線。只記估值、不算損益;更新估值會保留歷史。</div>
+          <div class="merged-sub tx-toggle" id="ma-toggle">
+            <span class="sub-dot"></span>其他資產清單<span class="count" id="ma-count"></span>
+            <span class="arrow" id="ma-arrow">▼</span>
+          </div>
+          <div class="tx-body" id="ma-body"><div id="manual-list"></div></div>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="panel merged-panel" id="report-panel">
+          <h2><span class="dot"></span>期間報表
+            <div class="seg seg-sm" id="rp-period" style="margin-left:12px">
+              <button class="on" data-rp="monthly">月報</button>
+              <button data-rp="yearly">年報</button>
+            </div>
+          </h2>
+          <div id="report-body"><div class="empty">尚無資料</div></div>
+          <div class="ai-note">期間損益已排除當期出入金,只反映真實漲跌。年度已實現損益(含股息)供海外所得等年度回顧參考,僅呈現數字、不做稅務計算。</div>
+        </div>
+
+        <div class="spacer"></div>
         <div class="chart-card">
-          <div class="ch-h"><span class="ch-t" id="wv-title">歷史錢包總價值</span><div class="legend2" id="wv-legend"></div></div>
+          <div class="ch-h"><span class="ch-t" id="wv-title">歷史錢包總價值</span>
+            <div class="seg seg-sm" id="wv-mode" style="margin-left:12px">
+              <button class="on" data-hmode="ccy">分幣別</button>
+              <button data-hmode="total">總淨值 (美金)</button>
+            </div>
+            <div class="legend2" id="wv-legend"></div></div>
           <div id="wallet-value-chart"><div class="chart-msg">尚無資料</div></div>
         </div>
         <div class="chart-card">
@@ -335,6 +377,18 @@
             <span id="io-status" style="font-size:11.5px;color:var(--muted)"></span>
           </div>
           <div class="ai-note">匯出會產生一個 JSON 備份檔；匯入會以檔案內容「覆寫」你所選取的項目(請慎用)。</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="panel">
+          <h2><span class="dot"></span>自動備份 &amp; 匯入</h2>
+          <div class="ai-row" style="margin-top:6px">
+            <button class="btn" id="backup-now-btn">💾 立即備份資料庫</button>
+            <button class="btn" id="backup-folder-btn">📂 開啟備份資料夾</button>
+            <button class="btn" id="csv-import-btn">📄 匯入券商 CSV</button>
+            <span id="backup-status" style="font-size:11.5px;color:var(--muted)"></span>
+          </div>
+          <div id="backup-list" class="ai-note" style="margin-top:10px"></div>
+          <div class="ai-note">App 每日啟動時自動備份 <code>wallet.db</code>(保留最近 30 份);你的全部資產歷史都在這個檔案裡。CSV 需含欄位:日期 / 代號 / 買賣 / 股數 / 價格(可選 費用),重複列會自動略過。</div>
         </div>
         <div class="spacer"></div>
         <div class="panel">

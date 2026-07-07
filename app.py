@@ -12,10 +12,12 @@ from api import Api, resource_path, setup_logging
 
 def main():
     setup_logging()   # 啟動時設定 RotatingFileHandler 日誌(見 api.setup_logging)
+    api = Api()
+    api.auto_backup()   # 每日一次自動備份 wallet.db(全部資產歷史的唯一來源)
     webview.create_window(
         "Stock Wallet",
         url=resource_path("web/index.html"),
-        js_api=Api(),
+        js_api=api,
         width=1240,
         height=860,
         min_size=(980, 660),

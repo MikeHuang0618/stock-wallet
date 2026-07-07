@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -941,16 +942,33 @@ class Api:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             amount REAL NOT NULL, date TEXT NOT NULL,
             note TEXT, currency TEXT DEFAULT 'USD', created_at TEXT)""")
+        # 每日資產快照:歷史「被記錄的事實」,一日一幣別一列;同日重寫採 UPSERT。
+        conn.execute("""CREATE TABLE IF NOT EXISTS snapshots(
+            date TEXT NOT NULL, currency TEXT NOT NULL,
+            market_value REAL NOT NULL, cash_balance REAL NOT NULL,
+            portfolio_value REAL NOT NULL, fx REAL, detail TEXT, created_at TEXT,
+            PRIMARY KEY(date, currency))""")
+        # 手動估值資產(定存/保險/實體黃金等無行情資產):只記某日估值,不記損益。
+        conn.execute("""CREATE TABLE IF NOT EXISTS manual_assets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, currency TEXT DEFAULT 'USD', created_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS manual_valuations(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL,
+            date TEXT NOT NULL, value REAL NOT NULL, created_at TEXT)""")
         # 遷移:若舊資料庫缺 side 欄位,自動補上
         cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
         if "side" not in cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN side TEXT DEFAULT 'buy'")
             conn.execute("UPDATE transactions SET side='sell' WHERE quantity < 0")
             conn.execute("UPDATE transactions SET quantity=ABS(quantity)")
+        # 遷移:舊 transactions 缺 fee 欄位(手續費 + 交易稅),補上並預設 0
+        if "fee" not in cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN fee REAL DEFAULT 0")
         # 遷移:舊 deposits 缺 currency 欄位,補上並預設為美金
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(deposits)").fetchall()]
         if "currency" not in dcols:
             conn.execute("ALTER TABLE deposits ADD COLUMN currency TEXT DEFAULT 'USD'")
+        conn.commit()   # 明確提交建表與遷移(UPDATE 屬 DML,不提交會在連線關閉時回滾)
         return conn
 
     @staticmethod
@@ -975,26 +993,46 @@ class Api:
         finally:
             conn.close()
 
-    def wallet_add(self, symbol, name, quantity, price, date_str, side="buy"):
+    def wallet_add(self, symbol, name, quantity, price, date_str, side="buy", fee=0):
         try:
             symbol = (symbol or "").strip().upper()
-            q, p = abs(float(quantity)), float(price)
-            side = side if side in ("buy", "sell") else "buy"
-            if not symbol or p < 0 or not date_str:
+            side = side if side in ("buy", "sell", "dividend", "stock_dividend", "adjust") else "buy"
+            raw_q, p, fee = float(quantity), float(price), abs(float(fee or 0))
+            # adjust(拆股/合股)保留正負號;其餘一律取正。
+            q = raw_q if side == "adjust" else abs(raw_q)
+            if not symbol or not date_str:
                 return {"ok": False, "error": "欄位不完整"}
-            if q == 0:
-                return {"ok": False, "error": "數量不可為 0"}
+            if side == "dividend":
+                q = 0.0                              # 現金股利:price 即配息總金額,股數固定 0
+                if p <= 0:
+                    return {"ok": False, "error": "配息金額必須大於 0"}
+            elif side in ("stock_dividend", "adjust"):
+                p = 0.0                              # 配股/拆股:成本不變,price 無意義
+                if abs(q) < 1e-12:
+                    return {"ok": False, "error": "股數不可為 0"}
+            else:                                    # buy / sell
+                if p < 0:
+                    return {"ok": False, "error": "欄位不完整"}
+                if q == 0:
+                    return {"ok": False, "error": "數量不可為 0"}
             conn = self._db()
             try:
                 with conn:
                     conn.execute(
-                        "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
-                        (symbol, name or symbol, side, q, p, date_str,
+                        "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (symbol, name or symbol, side, q, p, date_str, fee,
                          datetime.now().isoformat(timespec="seconds")))
             finally:
                 conn.close()
             self._invalidate_history_cache()
             return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def estimate_fee(self, price, quantity, side):
+        """台股手續費 + 交易稅預估(供 UI 填入,使用者可改)。委派純函式。"""
+        try:
+            return {"ok": True, "fee": wl.estimate_tw_fee(price, quantity, side)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1034,23 +1072,175 @@ class Api:
             if not d.get("currency"):
                 d["currency"] = "USD"
 
+        manual = self.manual_assets_current()          # {USD:金額, TWD:金額}(各幣別最新估值合計)
         ccy_blocks = {}
         for ccy in ("USD", "TWD"):
             c_holds = [h for h in enriched if h["currency"] == ccy]
             c_txs = [t for t in txs if t["currency"] == ccy]
-            realized = wl.aggregate_holdings(c_txs)["total_realized_pnl"]
+            agg = wl.aggregate_holdings(c_txs)
+            realized = agg["total_realized_pnl"]
+            dividends = agg["total_dividends"]
             deps = sum(float(d["amount"]) for d in deposits
                        if (d.get("currency") or "USD") == ccy)
-            block = wl.summarize_currency(c_holds, realized, deps)
+            block = wl.summarize_currency(c_holds, realized, deps, dividends)
+            block["manual_assets"] = manual.get(ccy, 0.0)
+            block["net_worth"] = block["portfolio_value"] + manual.get(ccy, 0.0)
             block["day_date"] = next((h.get("market_date") for h in c_holds if h.get("market_date")), None)
             block["prev_date"] = next((h.get("prev_date") for h in c_holds if h.get("prev_date")), None)
             block["realized_detail"] = wl.realized_breakdown(c_txs)   # 各標的已實現損益(含已平倉)
+            block["xirr"] = self._xirr_for(c_txs, deposits, ccy, block["portfolio_value"])
             ccy_blocks[ccy] = block
 
         fx = self._fx_twd_per_usd()   # 1 USD = fx TWD
         total = wl.combine_currencies(ccy_blocks["USD"], ccy_blocks["TWD"], fx)
+        self._write_snapshot(ccy_blocks, fx, enriched)   # 落地今日快照(歷史即事實)
         return {"fx": fx, "transactions": txs, "deposits": deposits,
                 "ccy": ccy_blocks, "total": total}
+
+    @staticmethod
+    def _xirr_for(c_txs, deposits, ccy, portfolio_value):
+        """該幣別的年化報酬 (XIRR):現金流 = 出入金(入金負、出金正)+ 期末淨值(正)。
+        持有 < 30 天或無解時 wl.compute_xirr 回 None,UI 顯示「—」。"""
+        flows = [(d["date"], -float(d["amount"])) for d in deposits
+                 if (d.get("currency") or "USD") == ccy and d.get("date")]
+        if not flows or portfolio_value is None:
+            return None
+        today = date.today().isoformat()
+        flows.append((today, float(portfolio_value)))
+        r = wl.compute_xirr(flows)
+        return r * 100 if r is not None else None       # 以百分比回傳
+
+    # ---- 每日快照(歷史即事實) ----
+    def _write_snapshot(self, ccy_blocks, fx, enriched):
+        """把今日各幣別淨值落地成快照(同日 UPSERT)。收盤前盤中值會被較新值覆蓋,
+        收盤後即穩定。跨日後不再改寫 —— 這使下市/改代號時過去區段不受回算影響。"""
+        try:
+            today = date.today().isoformat()
+            conn = self._db()
+            try:
+                with conn:
+                    for ccy, block in ccy_blocks.items():
+                        snap_date = block.get("day_date") or today
+                        mv = block.get("total_value")
+                        pv = block.get("portfolio_value")
+                        if mv is None or pv is None:
+                            continue                     # 報價缺失,不寫入半殘快照
+                        detail = [{"symbol": h["symbol"], "qty": h.get("qty"),
+                                   "close": h.get("price"), "value": h.get("market_value")}
+                                  for h in enriched if h.get("currency") == ccy]
+                        conn.execute(
+                            """INSERT INTO snapshots(date,currency,market_value,cash_balance,
+                               portfolio_value,fx,detail,created_at)
+                               VALUES(?,?,?,?,?,?,?,?)
+                               ON CONFLICT(date,currency) DO UPDATE SET
+                               market_value=excluded.market_value, cash_balance=excluded.cash_balance,
+                               portfolio_value=excluded.portfolio_value, fx=excluded.fx,
+                               detail=excluded.detail, created_at=excluded.created_at""",
+                            (snap_date, ccy, mv, pv - mv, pv, fx,
+                             json.dumps(detail, ensure_ascii=False),
+                             datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+        except Exception as e:
+            log.warning("write snapshot failed: %s", e)
+
+    def _read_snapshots(self, ccy):
+        """讀取某幣別的每日快照,依日期升冪。回傳 [{date, market_value, portfolio_value, fx}]。"""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT date, market_value, portfolio_value, fx FROM snapshots WHERE currency=? ORDER BY date",
+                (ccy,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def _snapshot_fx_series(self):
+        """各日期的 USD→TWD 匯率(取自 TWD 快照),供合併歷史折算。回傳 {date: fx}。"""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT date, fx FROM snapshots WHERE currency='TWD' AND fx IS NOT NULL").fetchall()
+            return {r["date"]: r["fx"] for r in rows}
+        finally:
+            conn.close()
+
+    # ---- 手動估值資產(定存/保險/實體資產等) ----
+    def manual_asset_list(self):
+        """所有手動資產及其最新估值。回傳 [{id, name, currency, value, date}]。"""
+        conn = self._db()
+        try:
+            assets = [dict(r) for r in conn.execute(
+                "SELECT * FROM manual_assets ORDER BY id").fetchall()]
+            out = []
+            for a in assets:
+                v = conn.execute(
+                    "SELECT value, date FROM manual_valuations WHERE asset_id=? ORDER BY date DESC, id DESC LIMIT 1",
+                    (a["id"],)).fetchone()
+                out.append({"id": a["id"], "name": a["name"],
+                            "currency": a.get("currency") or "USD",
+                            "value": v["value"] if v else None,
+                            "date": v["date"] if v else None})
+            return out
+        finally:
+            conn.close()
+
+    def manual_asset_add(self, name, currency="USD", value=None, date_str=None):
+        try:
+            name = (name or "").strip()
+            if not name:
+                return {"ok": False, "error": "請輸入資產名稱"}
+            currency = "TWD" if str(currency).upper() == "TWD" else "USD"
+            conn = self._db()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "INSERT INTO manual_assets(name,currency,created_at) VALUES(?,?,?)",
+                        (name, currency, datetime.now().isoformat(timespec="seconds")))
+                    aid = cur.lastrowid
+                    if value not in (None, ""):
+                        conn.execute(
+                            "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                            (aid, date_str or date.today().isoformat(), float(value),
+                             datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def manual_asset_set_value(self, asset_id, value, date_str=None):
+        try:
+            conn = self._db()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                        (int(asset_id), date_str or date.today().isoformat(), float(value),
+                         datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def manual_asset_delete(self, asset_id):
+        conn = self._db()
+        try:
+            with conn:
+                conn.execute("DELETE FROM manual_valuations WHERE asset_id=?", (asset_id,))
+                conn.execute("DELETE FROM manual_assets WHERE id=?", (asset_id,))
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    def manual_assets_current(self):
+        """各幣別手動資產最新估值合計。回傳 {USD: float, TWD: float}。"""
+        out = {"USD": 0.0, "TWD": 0.0}
+        for a in self.manual_asset_list():
+            if a["value"] is not None:
+                out[a["currency"]] = out.get(a["currency"], 0.0) + float(a["value"])
+        return out
 
     def wallet_history(self):
         """回傳 {USD:{...}, TWD:{...}},各幣別的歷史錢包價值與每日損益分開計算。"""
@@ -1100,12 +1290,56 @@ class Api:
         for ccy in ("USD", "TWD"):
             c_txs = [t for t in txs if t["currency"] == ccy]
             if not any(t.get("date") for t in c_txs):
-                out[ccy] = dict(empty)
+                out[ccy] = dict(empty, reconcile_warning=None)
                 continue
             c_prices = {s: v for s, v in prices.items() if self._ccy_of(s) == ccy}
             c_deps = [d for d in deps if (d.get("currency") or "USD") == ccy]
-            out[ccy] = wl.build_history(c_txs, c_prices, c_deps)
+            recomputed = wl.build_history(c_txs, c_prices, c_deps)
+            # 快照優先:已落地的過去不因回算失真而改變(核心訴求)。
+            merged = wl.merge_snapshot_history(self._read_snapshots(ccy), recomputed)
+            self._add_manual_assets_to_history(merged, ccy)   # 淨資產:疊加手動資產逐日估值
+            out[ccy] = merged
+
+        # 跨幣別合併總淨值曲線(美金計)。fx 歷史優先取 TWD=X 日線(涵蓋快照前的過去),
+        # 疊加每日快照 fx,今日再補即時匯率。無台幣資產則不需匯率(省一次網路)。
+        has_twd = any(t["currency"] == "TWD" for t in txs)
+        fx_series = {}
+        if has_twd:
+            _, fx_daily = fetch("TWD=X")               # [(date, close)];close = 1USD 兌 TWD
+            fx_series = {d: c for d, c in fx_daily}
+        fx_series.update(self._snapshot_fx_series())    # 快照 fx 覆蓋對應日
+        live_fx = self._fx_twd_per_usd()
+        if live_fx:
+            fx_series[date.today().isoformat()] = live_fx
+        out["TOTAL"] = wl.combine_history(out["USD"], out["TWD"], fx_series)
         return out
+
+    def _add_manual_assets_to_history(self, hist, ccy):
+        """把該幣別手動資產的逐日估值(前向填補)疊加到淨值曲線 portfolio_value。
+        手動資產只記估值、不記損益 —— 直接抬升淨資產線,不影響 daily_pnl(市值變化)。"""
+        dates = hist.get("dates") or []
+        if not dates:
+            return
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                """SELECT v.asset_id, v.date, v.value FROM manual_valuations v
+                   JOIN manual_assets a ON a.id = v.asset_id
+                   WHERE COALESCE(a.currency,'USD')=? ORDER BY v.date""", (ccy,)).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return
+        by_asset = defaultdict(dict)
+        for r in rows:
+            by_asset[r["asset_id"]][r["date"]] = r["value"]
+        add = [0.0] * len(dates)
+        for series in by_asset.values():
+            filled = wl._forward_fill(dates, series, before=0.0)
+            for i, v in enumerate(filled):
+                add[i] += v
+        hist["portfolio_value"] = [
+            (pv + a) if pv is not None else None for pv, a in zip(hist["portfolio_value"], add)]
 
     def deposit_list(self):
         conn = self._db()
@@ -1153,15 +1387,155 @@ class Api:
         finally:
             conn.close()
 
+    # ---- 期間報表(月報 / 年報) ----
+    def wallet_report(self, period="monthly"):
+        """各幣別的期間淨值彙總 + 年度已實現損益(含股息)。純數學委派 wallet.py。"""
+        period = "yearly" if period == "yearly" else "monthly"
+        hist = self.wallet_history()
+        txs = self.wallet_list()
+        for t in txs:
+            t["currency"] = self._ccy_of(t["symbol"])
+        deps = self.deposit_list()
+        out = {}
+        for ccy in ("USD", "TWD"):
+            h = hist.get(ccy) or {}
+            c_deps = [d for d in deps if (d.get("currency") or "USD") == ccy]
+            periods = wl.summarize_periods(h.get("dates", []), h.get("portfolio_value", []),
+                                           c_deps, period=period)
+            c_txs = [t for t in txs if t["currency"] == ccy]
+            out[ccy] = {"periods": periods, "realized_years": wl.realized_by_year(c_txs)}
+        return out
+
+    # ---- 資料庫自動備份(全部資產歷史的唯一來源,必須有備援) ----
+    def _backups_dir(self):
+        d = os.path.join(data_dir(), "backups")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def auto_backup(self, keep=30):
+        """啟動時若當日尚無備份 → 以 SQLite backup API 複製 wallet.db,保留最近 keep 份。"""
+        try:
+            src = _file("wallet.db")
+            if not os.path.exists(src):
+                return {"ok": False, "error": "尚無資料庫"}
+            dst = os.path.join(self._backups_dir(), f"wallet-{date.today().isoformat()}.db")
+            if os.path.exists(dst):
+                return {"ok": True, "skipped": True}
+            self._backup_db_to(src, dst)
+            self._prune_backups(keep)
+            return {"ok": True, "path": dst}
+        except Exception as e:
+            log.warning("auto_backup failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _backup_db_to(src, dst):
+        """用 SQLite 線上備份 API 安全複製(即使有連線寫入中也一致)。"""
+        s = sqlite3.connect(src)
+        d = sqlite3.connect(dst)
+        try:
+            with d:
+                s.backup(d)
+        finally:
+            s.close()
+            d.close()
+
+    def _prune_backups(self, keep):
+        files = sorted(f for f in os.listdir(self._backups_dir())
+                       if f.startswith("wallet-") and f.endswith(".db"))
+        for f in files[:-keep] if keep > 0 else []:
+            try:
+                os.remove(os.path.join(self._backups_dir(), f))
+            except OSError:
+                pass
+
+    def list_backups(self):
+        try:
+            files = sorted((f for f in os.listdir(self._backups_dir())
+                            if f.startswith("wallet-") and f.endswith(".db")), reverse=True)
+            return [{"name": f, "path": os.path.join(self._backups_dir(), f)} for f in files]
+        except OSError:
+            return []
+
+    def open_backups_folder(self):
+        try:
+            os.startfile(self._backups_dir())    # noqa: S606 (Windows 桌面 app 開資料夾)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def restore_backup(self, path):
+        """還原備份:先把現行 db 另存 pre-restore,再覆蓋。呼叫後前端須重新載入錢包。"""
+        try:
+            if not path or not os.path.exists(path):
+                return {"ok": False, "error": "找不到備份檔"}
+            cur = _file("wallet.db")
+            if os.path.exists(cur):
+                self._backup_db_to(cur, os.path.join(
+                    self._backups_dir(), f"wallet-prerestore-{datetime.now():%Y%m%d-%H%M%S}.db"))
+            self._backup_db_to(path, cur)
+            self._invalidate_history_cache()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---- 券商對帳單 CSV 匯入(降低逐筆輸入摩擦) ----
+    def wallet_import_csv(self):
+        """開檔選 CSV → 解析 + 與現有交易去重 → 直接寫入非重複列。
+
+        欄位對應(標頭不分大小寫,接受中英):date/日期, symbol/代號, side/買賣,
+        quantity/股數, price/價格, fee/費用。side 接受 buy/sell/買/賣。
+        以 (date, symbol, side, quantity, price) 全等視為重複並跳過。
+        """
+        try:
+            win = webview.windows[0]
+            paths = win.create_file_dialog(webview.OPEN_DIALOG, file_types=("CSV (*.csv)",))
+            if not paths:
+                return {"ok": False, "error": "已取消"}
+            path = paths[0] if isinstance(paths, (list, tuple)) else paths
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                text = f.read()
+            parsed = wl.parse_csv_transactions(text)
+            rows, errors = parsed["rows"], parsed["errors"]
+            if not rows:
+                return {"ok": False, "error": "未解析到有效交易列;請確認標頭含 日期/代號/買賣/股數/價格"}
+            existing = {(t.get("date"), (t.get("symbol") or "").upper(), t.get("side"),
+                         round(float(t.get("quantity") or 0), 8), round(float(t.get("price") or 0), 8))
+                        for t in self.wallet_list()}
+            inserted = skipped = 0
+            conn = self._db()
+            try:
+                with conn:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    for r in rows:
+                        key = (r["date"], r["symbol"].upper(), r["side"],
+                               round(r["quantity"], 8), round(r["price"], 8))
+                        if key in existing:
+                            skipped += 1
+                            continue
+                        existing.add(key)
+                        conn.execute(
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (r["symbol"].upper(), r.get("name") or r["symbol"].upper(), r["side"],
+                             r["quantity"], r["price"], r["date"], r.get("fee", 0.0), now))
+                        inserted += 1
+            finally:
+                conn.close()
+            self._invalidate_history_cache()
+            return {"ok": True, "inserted": inserted, "skipped": skipped, "errors": errors}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ---- 匯入 / 匯出 ----
     def export_data(self, sections):
         try:
             sections = sections or []
-            data = {"app": APP_NAME, "version": 1,
+            data = {"app": APP_NAME, "version": 2,
                     "exported_at": datetime.now().isoformat(timespec="seconds")}
             if "transactions" in sections:
-                data["transactions"] = self.wallet_list()
+                data["transactions"] = self.wallet_list()   # 含 fee 欄位與新 side
                 data["deposits"] = self.deposit_list()
+                data["manual_assets"] = self._export_manual_assets()
             if "holdings" in sections:
                 data["holdings"] = wl.aggregate_holdings(self.wallet_list())["holdings"]
             if "watchlist" in sections:
@@ -1219,6 +1593,8 @@ class Api:
                                      d.get("created_at") or now))
                     finally:
                         conn.close()
+                if "manual_assets" in data:
+                    self._import_manual_assets(data["manual_assets"])
             elif "holdings" in sections and "holdings" in data:
                 self._replace_transactions(None, data.get("holdings"))
                 applied.append("持有標的")
@@ -1238,17 +1614,56 @@ class Api:
                         # 向下相容:若舊備份無 side,由 quantity 正負推導
                         raw_q = float(t.get("quantity", 0))
                         side = t.get("side") or ("buy" if raw_q >= 0 else "sell")
+                        # adjust(拆股)保留正負號;其餘取正
+                        q = raw_q if side == "adjust" else abs(raw_q)
                         conn.execute(
-                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
-                            (t.get("symbol"), t.get("name"), side, abs(raw_q),
-                             float(t.get("price", 0)), t.get("date"), t.get("created_at") or now))
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (t.get("symbol"), t.get("name"), side, q,
+                             float(t.get("price", 0)), t.get("date"),
+                             abs(float(t.get("fee") or 0)), t.get("created_at") or now))
                 elif holdings:
                     today = date.today().isoformat()
                     for h in holdings:
                         conn.execute(
-                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
                             (h.get("symbol"), h.get("name"), "buy", float(h.get("qty", 0)),
-                             float(h.get("avg_cost", 0)), today, now))
+                             float(h.get("avg_cost", 0)), today, 0.0, now))
+        finally:
+            conn.close()
+
+    def _export_manual_assets(self):
+        """匯出手動資產與其完整估值歷史(供 import 還原)。"""
+        conn = self._db()
+        try:
+            out = []
+            for a in conn.execute("SELECT * FROM manual_assets ORDER BY id").fetchall():
+                vals = conn.execute(
+                    "SELECT date, value FROM manual_valuations WHERE asset_id=? ORDER BY date",
+                    (a["id"],)).fetchall()
+                out.append({"name": a["name"], "currency": a["currency"] or "USD",
+                            "valuations": [{"date": v["date"], "value": v["value"]} for v in vals]})
+            return out
+        finally:
+            conn.close()
+
+    def _import_manual_assets(self, assets):
+        """以匯入內容取代所有手動資產(整批置換,與交易/存款一致的還原語義)。"""
+        conn = self._db()
+        try:
+            with conn:
+                conn.execute("DELETE FROM manual_valuations")
+                conn.execute("DELETE FROM manual_assets")
+                now = datetime.now().isoformat(timespec="seconds")
+                for a in assets or []:
+                    cur = conn.execute(
+                        "INSERT INTO manual_assets(name,currency,created_at) VALUES(?,?,?)",
+                        (a.get("name") or "資產",
+                         "TWD" if str(a.get("currency", "USD")).upper() == "TWD" else "USD", now))
+                    aid = cur.lastrowid
+                    for v in a.get("valuations") or []:
+                        conn.execute(
+                            "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                            (aid, v.get("date"), float(v.get("value", 0)), now))
         finally:
             conn.close()
 
