@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Wallet DB migrations (`side`/`fee`/`currency` back-fill) are now explicitly committed;
   previously the `UPDATE`s that convert legacy signed quantities to buy/sell rows could roll
   back on connection close, leaving old databases un-migrated.
+- Daily snapshots are skipped for a currency when any of its holdings is missing a quote —
+  a network/Yahoo outage can no longer record an understated market value as the immutable
+  history (the old guard checked a sum that could never be `None`).
+- Snapshot-vs-recompute divergence detection now scans **all** overlapping dates and reports
+  the earliest mismatch; previously only the first overlap was checked, so a back-filled
+  old transaction diverging mid-range went unreported.
+- Adding a transaction dated before the latest snapshot now returns a `backdated` flag and
+  the UI says the chart keeps following recorded snapshots (no silent history rewrite).
+- New `tests/test_api_wallet_db.py` covers the DB layer against a temp `APPDATA`
+  (migration persistence, snapshot guard/UPSERT, manual assets, backup prune/restore).
 
 ### Todo
 - Mocked data-layer tests for `api.py` (Yahoo timeout / missing-value fallbacks).

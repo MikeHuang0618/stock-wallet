@@ -48,6 +48,14 @@ def test_no_warning_within_tolerance():
     assert m["reconcile_warning"] is None
 
 
+def test_reconcile_scans_all_overlaps_not_only_first():
+    """首個重疊日一致、第二個分歧(補登舊交易的典型情境)→ 仍須偵測到。"""
+    snaps = [{"date": "2026-01-02", "market_value": 1050, "portfolio_value": 1050},
+             {"date": "2026-01-03", "market_value": 9999, "portfolio_value": 9999}]
+    m = w.merge_snapshot_history(snaps, _recomputed())
+    assert m["reconcile_warning"]["date"] == "2026-01-03"
+
+
 def test_no_snapshots_returns_recompute_unchanged():
     m = w.merge_snapshot_history([], _recomputed())
     assert m["portfolio_value"] == [A(1000), A(1050), A(1100)]

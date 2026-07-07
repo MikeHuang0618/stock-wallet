@@ -1022,10 +1022,15 @@ class Api:
                         "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
                         (symbol, name or symbol, side, q, p, date_str, fee,
                          datetime.now().isoformat(timespec="seconds")))
+                # 補登偵測:交易日期早於該幣別最新快照 → 告知使用者(歷史圖仍以快照為準,
+                # 絕不靜默改寫已記錄的過去;分歧會在歷史圖以 reconcile 提示呈現)。
+                row = conn.execute("SELECT MAX(date) AS d FROM snapshots WHERE currency=?",
+                                   (self._ccy_of(symbol),)).fetchone()
+                backdated = bool(row and row["d"] and date_str < row["d"])
             finally:
                 conn.close()
             self._invalidate_history_cache()
-            return {"ok": True}
+            return {"ok": True, "backdated": backdated}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1113,7 +1118,10 @@ class Api:
     # ---- 每日快照(歷史即事實) ----
     def _write_snapshot(self, ccy_blocks, fx, enriched):
         """把今日各幣別淨值落地成快照(同日 UPSERT)。收盤前盤中值會被較新值覆蓋,
-        收盤後即穩定。跨日後不再改寫 —— 這使下市/改代號時過去區段不受回算影響。"""
+        收盤後即穩定。跨日後不再改寫 —— 這使下市/改代號時過去區段不受回算影響。
+
+        寧缺勿錯:任一持倉報價缺失(market_value=None)就跳過該幣別 ——
+        total_value 是 sum(),缺報價會靜默低估,絕不能把失真數字寫成不可變紀錄。"""
         try:
             today = date.today().isoformat()
             conn = self._db()
@@ -1124,10 +1132,14 @@ class Api:
                         mv = block.get("total_value")
                         pv = block.get("portfolio_value")
                         if mv is None or pv is None:
-                            continue                     # 報價缺失,不寫入半殘快照
+                            continue
+                        c_holds = [h for h in enriched if h.get("currency") == ccy]
+                        if any(h.get("market_value") is None for h in c_holds):
+                            log.warning("snapshot %s skipped: missing quotes", ccy)
+                            continue
                         detail = [{"symbol": h["symbol"], "qty": h.get("qty"),
                                    "close": h.get("price"), "value": h.get("market_value")}
-                                  for h in enriched if h.get("currency") == ccy]
+                                  for h in c_holds]
                         conn.execute(
                             """INSERT INTO snapshots(date,currency,market_value,cash_balance,
                                portfolio_value,fx,detail,created_at)

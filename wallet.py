@@ -356,13 +356,14 @@ def merge_snapshot_history(snapshots, recomputed, tol=0.01):
             portfolio_value.append(s["portfolio_value"] if s else rc_pv.get(d))
         daily_pnl.append(rc_dp.get(d))
 
+    # 掃描「所有」重疊日,回報最早的分歧(補登舊交易造成的中段分歧不可漏報)。
     warning = None
     for d in rc_dates:
         if d in snap_by_date:
             rpv, spv = rc_pv.get(d), snap_by_date[d]["portfolio_value"]
             if rpv is not None and spv is not None and abs(spv - rpv) / max(abs(rpv), 1.0) > tol:
                 warning = {"date": d, "recomputed": rpv, "snapshot": spv}
-            break
+                break
     return {"dates": merged_dates, "total_value": total_value,
             "portfolio_value": portfolio_value, "daily_pnl": daily_pnl,
             "reconcile_warning": warning}

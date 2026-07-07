@@ -1361,7 +1361,7 @@ function initWalletForm(){
     $('#w-sym').value='';$('#w-qty').value='';$('#w-price').value='';$('#w-fee').value='';STATE.wallet.symName='';
     // 自動切換到該標的所屬幣別,方便立即檢視
     setWalletCcy(/\.TWO?$/i.test(sym.toUpperCase())?'TWD':'USD');
-    toast('已新增交易');loadWallet();
+    toast(r.backdated?'已補登過去交易;歷史圖仍以已記錄的每日快照為準':'已新增交易');loadWallet();
   };
   // 淨值圖:分幣別 ↔ 總淨值(美金)切換
   const wvMode=$('#wv-mode');
