@@ -24,8 +24,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-import requests
-import webview
+# requests / webview 為執行期依賴。CI 純邏輯測試環境只裝 pytest+ruff(見 .github/
+# workflows/ci.yml),不裝 GUI 依賴;api.py 的純函式(normalize_ohlcv / format_labels /
+# merge_events / migrate_watchlist / signals_from_ohlcv / QuoteRefresher 等)不需要它們,
+# 故以 try/except 保護 import,讓 `import api` 在無執行期依賴時仍可載入(同 winotify 作法)。
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    import webview
+except Exception:
+    webview = None
 
 import indicators as ta
 import analysis
