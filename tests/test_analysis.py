@@ -81,9 +81,11 @@ def test_build_openai_request():
     assert body["messages"][0]["content"] == "hi"
 
 
-def test_build_gemini_request_puts_key_in_url():
+def test_build_gemini_request_puts_key_in_header():
+    """Gemini 金鑰改走 x-goog-api-key header,不得出現在 URL(URL 會被記進 log/歷程)。"""
     url, headers, body = an.build_ai_request("gemini", "gemini-2.5-flash", "KEY", "hi")
-    assert "key=KEY" in url
+    assert "KEY" not in url
+    assert headers["x-goog-api-key"] == "KEY"
     assert body["contents"][0]["parts"][0]["text"] == "hi"
 
 

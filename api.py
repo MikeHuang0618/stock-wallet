@@ -11,13 +11,18 @@
 資料來源:Yahoo Finance(延遲報價,僅供參考)。
 """
 
+import copy
 import json
+import logging
 import os
 import sqlite3
 import sys
+import threading
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
+from logging.handlers import RotatingFileHandler
 
 import requests
 import webview
@@ -43,6 +48,10 @@ YAHOO_SUMMARY = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}
 YAHOO_CRUMB = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 YAHOO_CHART_Q = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?{query}"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+WALLET_HISTORY_TTL = 600   # 錢包歷史日線快取存活秒數(停留在錢包頁時避免每 120 秒全量重抓)
+
+log = logging.getLogger("stockwallet")
 
 # 臺灣期貨交易所 (TAIFEX) 官方資料源
 #   台股 VIX:每日波動率指數檔 (big5,tab 分隔:日期 / 時間 / VIX / 前一交易日收盤)
@@ -151,39 +160,295 @@ def _file(name):
     return os.path.join(data_dir(), name)
 
 
+def setup_logging():
+    """設定 RotatingFileHandler 到 %APPDATA%/StockWallet/logs/app.log(1MB × 3)。
+
+    冪等(重複呼叫只設定一次),失敗靜默不影響啟動。
+    注意:嚴禁把 API 金鑰或其他機密寫入 log。
+    """
+    if getattr(setup_logging, "_done", False):
+        return
+    setup_logging._done = True
+    try:
+        logdir = os.path.join(data_dir(), "logs")
+        os.makedirs(logdir, exist_ok=True)
+        handler = RotatingFileHandler(
+            os.path.join(logdir, "app.log"),
+            maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"))
+        log.setLevel(logging.INFO)
+        if not log.handlers:
+            log.addHandler(handler)
+    except Exception:
+        pass
+
+
+def format_labels(ts, fmt, gmtoffset=0):
+    """把 UTC 秒數序列依交易所時區偏移格式化為 K 線標籤(純函式)。
+
+    gmtoffset 為 Yahoo meta.gmtoffset(秒)。小時線需以交易所當地時區顯示
+    (台股 09:00 而非 UTC 01:00);日線/月線 fmt 不含時間,偏移不跨日,結果不變。
+    作法比照 _fetch_one 的 _sess_date:utc 秒數 + gmtoffset 後以 UTC 格式化。
+    """
+    off = gmtoffset or 0
+    return [datetime.fromtimestamp(int(t) + off, tz=timezone.utc).strftime(fmt) for t in ts]
+
+
+def normalize_ohlcv(payload):
+    """統一 OHLCV 的 None 列處理(純函式,方便測試)。
+
+    Yahoo 序列常含 None:停牌造成的中段 None、正在形成的當日 bar 尾端 None,
+    或 close 有值但 volume 缺失。策略:
+      - close 為 None 的 bar 整列剔除(ts/labels/open/high/low/close/volume 同步對齊刪除);
+      - close 存在但 volume 為 None 時,volume 補 0。
+    這讓 rsi / obv 等指標不會因單一 None 整條變成 None。
+    有 error 或缺 close 欄位的 payload 原樣返回。
+    """
+    if payload.get("error") or "close" not in payload:
+        return payload
+    keep = [i for i, c in enumerate(payload["close"]) if c is not None]
+    for k in ("ts", "labels", "open", "high", "low", "close", "volume"):
+        arr = payload.get(k)
+        if isinstance(arr, list):
+            payload[k] = [arr[i] for i in keep if i < len(arr)]
+    payload["volume"] = [0 if v is None else v for v in payload.get("volume", [])]
+    return payload
+
+
+WATCHLIST_DEFAULT_GROUP = "default"
+
+
+def migrate_watchlist(data):
+    """把觀察名單資料正規化為 v2 群組結構(純函式)。
+
+    v2 結構:{"version":2,"groups":[{"id","name","items":[{sym,name}]}]}。
+    - v1(扁平陣列 [{sym,name}])→ 單一「預設」群組;
+    - v2 → 原樣(仍會正規化 items 並去重);
+    - 空 / None / 非預期型別 → 空的預設群組。
+    sym 全域去重(跨群組保留第一次出現);永遠保證存在 id="default" 的預設群組
+    (供刪除群組時把 items 併回)。
+    """
+    if isinstance(data, dict) and data.get("version") == 2 and isinstance(data.get("groups"), list):
+        groups = data["groups"]
+    elif isinstance(data, list):
+        groups = [{"id": WATCHLIST_DEFAULT_GROUP, "name": "預設", "items": data}]
+    else:
+        groups = []
+    seen, out_groups, has_default = set(), [], False
+    for g in groups:
+        gid = g.get("id") or WATCHLIST_DEFAULT_GROUP
+        has_default = has_default or gid == WATCHLIST_DEFAULT_GROUP
+        items = []
+        for it in (g.get("items") or []):
+            sym = it.get("sym")
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            items.append({"sym": sym, "name": it.get("name") or sym})
+        out_groups.append({"id": gid, "name": g.get("name") or "預設", "items": items})
+    if not has_default:
+        out_groups.insert(0, {"id": WATCHLIST_DEFAULT_GROUP, "name": "預設", "items": []})
+    return {"version": 2, "groups": out_groups}
+
+
+class QuoteRefresher(threading.Thread):
+    """背景報價刷新器(daemon 執行緒)。
+
+    UI 永不等網路:前端只讀快取(get_cache);抓取在此單一執行緒序列化,
+    因此更新永不重疊。標的變更(set_symbols)或要求立即刷新(request_now)會喚醒
+    執行緒立刻抓一輪,否則每 interval 秒抓一次。每輪抓取後呼叫 notify 推播前端。
+
+    fetch(symbols)->dict 與 notify() 皆由外部注入(方便單元測試;正式使用時
+    fetch=Api.get_quotes,notify=推播 evaluate_js)。
+    """
+
+    def __init__(self, fetch, notify, interval=120):
+        super().__init__(daemon=True)
+        self._fetch = fetch
+        self._notify = notify
+        self._interval = interval
+        self._symbols = []
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._wake = threading.Event()   # 標的變更 / 立即刷新時 set
+        self._stop = threading.Event()
+
+    def set_symbols(self, symbols):
+        new = list(dict.fromkeys(symbols or []))   # 去重、保序
+        with self._lock:
+            changed = set(new) != set(self._symbols)
+            self._symbols = new
+        if changed:              # 集合真的變了才喚醒立即刷新,避免同一動作觸發雙重推送
+            self._wake.set()
+
+    def request_now(self):
+        self._wake.set()
+
+    def get_cache(self):
+        with self._lock:
+            return dict(self._cache)
+
+    def stop(self):
+        self._stop.set()
+        self._wake.set()
+
+    def run(self):
+        while not self._stop.is_set():
+            # 等到 interval 到期,或被 set_symbols/request_now 提前喚醒(clear 於抓取前,
+            # 抓取期間新來的 wake 會保留到下一輪 wait,不會遺失喚醒)。
+            self._wake.wait(self._interval)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            with self._lock:
+                syms = list(self._symbols)
+            if not syms:
+                continue
+            try:
+                quotes = self._fetch(syms)
+            except Exception as e:
+                log.warning("QuoteRefresher fetch failed: %s", e)
+                quotes = None
+            if quotes:
+                with self._lock:
+                    self._cache.update(quotes)
+            self._notify()   # 每輪抓取後通知(即使失敗),讓前端解除等待並渲染最新快取
+
+
+def signals_from_ohlcv(ohlcv):
+    """從 _ohlcv payload 取出技術訊號(純函式)。有 error / 缺資料 → 空清單。
+    委派 signals.detect_all,供黃金頁與詳細頁共用同一套訊號定義。"""
+    if not ohlcv or ohlcv.get("error"):
+        return []
+    return sig.detect_all(ohlcv.get("open") or [], ohlcv.get("high") or [],
+                          ohlcv.get("low") or [], ohlcv.get("close") or [],
+                          ohlcv.get("volume") or [])
+
+
+def _event_key(e):
+    return (e.get("date"), e.get("type"), e.get("title"), e.get("time"))
+
+
+def merge_events(defaults, custom):
+    """合併內建事件(defaults,隨程式碼更新)與使用者自訂事件(custom,存於檔案),
+    標記 source 欄位並去重(純函式)。
+
+    以 (date,type,title,time) 為鍵;內建優先,與內建重複的自訂項不重複列出。
+    這讓內建事件不再被舊 events.json 快照凍結——它們永遠來自程式碼。
+    """
+    seen, out = set(), []
+    for e in defaults:
+        k = _event_key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**e, "source": "builtin"})
+    for e in (custom or []):
+        k = _event_key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({**e, "source": "custom"})
+    return out
+
+
+def migrate_events(old_events, defaults):
+    """把舊 events.json 扁平清單裡「不在內建清單中」的項目挑出來當自訂事件(純函式)。
+
+    以 (date,type,title,time) 比對內建;內建項不搬、重複項去重、移除殘留 source 欄位。
+    """
+    builtin_keys = {_event_key(e) for e in defaults}
+    seen, custom = set(), []
+    for e in (old_events or []):
+        k = _event_key(e)
+        if k in builtin_keys or k in seen:
+            continue
+        seen.add(k)
+        custom.append({kk: vv for kk, vv in e.items() if kk != "source"})
+    return custom
+
+
 class Api:
     """暴露給前端 JS 呼叫的介面 (window.pywebview.api.*)"""
 
     def __init__(self):
         self._ohlcv_cache = {}   # (sym, timeframe) -> (fetched_at, payload)
-        self._session = requests.Session()
+        # requests.Session 非執行緒安全,ThreadPoolExecutor 各執行緒不可共用同一個,
+        # 改用 threading.local() 持有每執行緒專屬的 Session(見 _http)。
+        self._local = threading.local()
         self._crumb = None
+        self._crumb_cookies = None          # 取得 crumb 時的 Yahoo cookies,注入其他執行緒 session
+        self._crumb_lock = threading.Lock()
+        self._history_cache = {}            # symbol -> (fetched_at, series);TTL WALLET_HISTORY_TTL
+        self._history_lock = threading.Lock()
+        self._refresher = None              # QuoteRefresher(背景報價推送),首次呼叫時 lazy 啟動
+
+    def _http(self):
+        """回傳當前執行緒專屬的 requests.Session(每執行緒一個,避免共用非執行緒安全物件)。
+        新建 session 會注入取得 crumb 時的 Yahoo cookies,讓財報查詢在工作執行緒也能通過驗證。"""
+        s = getattr(self._local, "session", None)
+        if s is None:
+            s = requests.Session()
+            if self._crumb_cookies is not None:
+                for c in self._crumb_cookies:
+                    s.cookies.set_cookie(copy.copy(c))
+            self._local.session = s
+        return s
+
+    def _invalidate_history_cache(self):
+        """交易新增/刪除/匯入時使錢包歷史日線快取整體失效
+        (最早交易日可能改變,舊快取的序列起點不再涵蓋,必須重抓)。"""
+        with self._history_lock:
+            self._history_cache.clear()
 
     # ---- 事件 ----
-    def get_events(self, market="us"):
+    @staticmethod
+    def _events_conf(market):
+        """回傳 (舊檔名, 自訂檔名, 內建清單)。us / tw 各一組。"""
         if market == "tw":
-            default, fname = DEFAULT_TW_EVENTS, "events_tw.json"
-        else:
-            default, fname = DEFAULT_EVENTS, "events.json"
-        events = default
+            return "events_tw.json", "custom_events_tw.json", DEFAULT_TW_EVENTS
+        return "events.json", "custom_events.json", DEFAULT_EVENTS
+
+    def get_events(self, market="us"):
+        old_name, custom_name, default = self._events_conf(market)
+        self._migrate_events_file(old_name, custom_name, default)   # 首次啟動遷移舊檔(之後為 no-op)
+        custom = self._load(custom_name, [])
+        return {"today": date.today().isoformat(),
+                "events": merge_events(default, custom)}
+
+    def add_event(self, date_str, type_str, title, time_str, impact, market="us"):
+        _, custom_name, _ = self._events_conf(market)
+        custom = self._load(custom_name, [])
+        custom.append({"date": date_str, "type": type_str, "title": title,
+                       "time": time_str, "impact": impact})
+        return self._save(custom_name, custom)
+
+    def delete_event(self, date_str, title, market="us"):
+        # 只允許刪除自訂事件;內建事件不在自訂檔內,filter 後自然保留。
+        _, custom_name, _ = self._events_conf(market)
+        custom = self._load(custom_name, [])
+        custom = [e for e in custom if not (e.get("date") == date_str and e.get("title") == title)]
+        return self._save(custom_name, custom)
+
+    def _migrate_events_file(self, old_name, custom_name, default):
+        """首次啟動遷移:舊 events.json 若存在,把非內建項搬到 custom_events.json,
+        舊檔改名為 .bak。舊檔不存在時直接 no-op(之後每次呼叫都是 no-op)。"""
+        old_path = _file(old_name)
+        if not os.path.exists(old_path):
+            return
         try:
-            p = _file(fname)
-            if os.path.exists(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    events = json.load(f)
+            with open(old_path, "r", encoding="utf-8") as f:
+                old = json.load(f)
         except Exception:
-            events = default
-        return {"today": date.today().isoformat(), "events": events}
-
-    def add_event(self, date_str, type_str, title, time_str, impact):
-        events = self.get_events()["events"]
-        events.append({"date": date_str, "type": type_str, "title": title, "time": time_str, "impact": impact})
-        return self._save("events.json", events)
-
-    def delete_event(self, date_str, title):
-        events = self.get_events()["events"]
-        events = [e for e in events if not (e.get("date") == date_str and e.get("title") == title)]
-        return self._save("events.json", events)
+            old = None
+        # 只在自訂檔尚不存在時才寫入,避免覆蓋使用者已編輯過的自訂事件
+        if old is not None and not os.path.exists(_file(custom_name)):
+            self._save(custom_name, migrate_events(old, default))
+        try:
+            os.replace(old_path, old_path + ".bak")   # os.replace 於 Windows 亦可覆蓋既有 .bak
+        except Exception:
+            pass
 
     # ---- 訊號提醒 ----
     def get_alerts(self):
@@ -194,13 +459,19 @@ class Api:
 
     # ---- 觀察名單 ----
     def get_watchlist(self, market="us"):
-        if market == "tw":
-            return self._load("watchlist_tw.json", DEFAULT_TW_WATCHLIST)
-        return self._load("watchlist.json", DEFAULT_WATCHLIST)
+        fname = "watchlist_tw.json" if market == "tw" else "watchlist.json"
+        default = DEFAULT_TW_WATCHLIST if market == "tw" else DEFAULT_WATCHLIST
+        raw = self._load(fname, default)
+        data = migrate_watchlist(raw)
+        # 舊 v1 檔或預設清單:遷移後寫回 v2(已是 v2 則不重寫,避免無謂 I/O)
+        if not (isinstance(raw, dict) and raw.get("version") == 2):
+            self._save(fname, data)
+        return data
 
     def save_watchlist(self, wl, market="us"):
+        # 接受 v2 結構或舊扁平陣列,一律正規化為 v2 後存檔
         fname = "watchlist_tw.json" if market == "tw" else "watchlist.json"
-        return self._save(fname, wl)
+        return self._save(fname, migrate_watchlist(wl))
 
     def _load(self, name, default):
         try:
@@ -237,6 +508,57 @@ class Api:
                 out[futs[f]] = f.result()
         return out
 
+    # ---- 背景報價推送(QuoteRefresher)----
+    def _ensure_refresher(self):
+        """首次呼叫時 lazy 啟動背景刷新器。此時前端已呼叫過 js_api,視窗必然存在,
+        故之後的 evaluate_js 推播不會早於視窗建立。"""
+        if self._refresher is None:
+            self._refresher = QuoteRefresher(self.get_quotes, self._push_quotes)
+            self._refresher.start()
+        return self._refresher
+
+    def _push_quotes(self):
+        """通知前端有新報價(呼叫 window.onQuotesPush)。視窗未就緒/已關則靜默忽略。"""
+        try:
+            wins = getattr(webview, "windows", None)
+            if wins:
+                wins[0].evaluate_js("window.onQuotesPush&&window.onQuotesPush()")
+        except Exception as e:
+            log.debug("push_quotes failed: %s", e)
+
+    def set_quote_symbols(self, symbols):
+        """前端設定要追蹤的報價標的;變更會觸發背景立即刷新一輪。"""
+        self._ensure_refresher().set_symbols(symbols or [])
+        return {"ok": True}
+
+    def request_refresh_now(self):
+        """前端要求立即刷新(手動 ↻)。"""
+        self._ensure_refresher().request_now()
+        return {"ok": True}
+
+    def get_quotes_cached(self):
+        """前端即讀報價快取(不打網路)。刷新器尚未啟動時回空 dict。"""
+        return self._refresher.get_cache() if self._refresher else {}
+
+    def get_signals(self, symbols):
+        """回傳 {symbol: [signal,...]}。內部用日線 _ohlcv(快取跟隨其 TTL)+ detect_all。
+        供黃金頁在報價之後非同步載入技術訊號徽章。"""
+        out = {}
+        symbols = list(dict.fromkeys(symbols or []))
+        if not symbols:
+            return out
+        spec = analysis.resolve_fetch_spec("天")   # 日線
+        if not spec:
+            return out
+
+        def one(sym):
+            return sym, signals_from_ohlcv(self._ohlcv(sym, spec))
+
+        with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as ex:
+            for s, sigs in ex.map(one, symbols):
+                out[s] = sigs
+        return out
+
     # ---- TAIFEX 官方資料源 (台股 VIX / 台指期) ----
     @staticmethod
     def _is_decimal(tok):
@@ -258,7 +580,7 @@ class Api:
             last_prev_close = None
             for ym in reversed(yms):
                 try:
-                    r = requests.get(TAIFEX_VIX_FILE.format(ym=ym), timeout=12, headers=HEADERS)
+                    r = self._http().get(TAIFEX_VIX_FILE.format(ym=ym), timeout=12, headers=HEADERS)
                     if r.status_code != 200:
                         continue
                     for line in r.content.decode("big5", "ignore").splitlines():
@@ -283,6 +605,7 @@ class Api:
             else:
                 res["error"] = "no data"
         except Exception as e:
+            log.warning("_taifex_vix failed: %s", e)
             res["error"] = str(e)
         return res
 
@@ -292,8 +615,8 @@ class Api:
         res = {"price": None, "prev": None, "change": None, "changePct": None,
                "spark": [], "error": None}
         try:
-            r = requests.post(TAIFEX_MIS_QUOTE, data=json.dumps({"MarketType": "0", "Objects": ["TXF"]}),
-                              headers=TAIFEX_MIS_HEADERS, timeout=12)
+            r = self._http().post(TAIFEX_MIS_QUOTE, data=json.dumps({"MarketType": "0", "Objects": ["TXF"]}),
+                                  headers=TAIFEX_MIS_HEADERS, timeout=12)
             ql = (r.json().get("RtData", {}) or {}).get("QuoteList", []) or []
             # 近月合約:SymbolID 形如 TXF<月碼A-L><年尾數>-F (非價差、非現貨 -S)
             near = next((q for q in ql if re.match(r"^TXF[A-L]\d-F$", q.get("SymbolID", ""))), None)
@@ -310,6 +633,7 @@ class Api:
             if res["price"] is None:
                 res["error"] = "no price"
         except Exception as e:
+            log.warning("_taifex_txf failed: %s", e)
             res["error"] = str(e)
         return res
 
@@ -317,7 +641,7 @@ class Api:
         res = {"price": None, "prev": None, "change": None, "changePct": None,
                "spark": [], "market_date": None, "prev_date": None, "error": None}
         try:
-            r = requests.get(YAHOO_CHART.format(sym=sym), timeout=12, headers=HEADERS)
+            r = self._http().get(YAHOO_CHART.format(sym=sym), timeout=12, headers=HEADERS)
             r.raise_for_status()
             data = r.json()["chart"]["result"][0]
             meta = data.get("meta", {})
@@ -369,6 +693,7 @@ class Api:
             else:
                 res["error"] = "no data"
         except Exception as e:
+            log.warning("_fetch_one %s failed: %s", sym, e)
             res["error"] = str(e)
         return res
 
@@ -471,22 +796,25 @@ class Api:
             return hit[1]
         payload = {"error": None}
         try:
-            r = self._session.get(
+            r = self._http().get(
                 YAHOO_CHART_Q.format(sym=symbol, query=spec["query"]),
                 timeout=14, headers=HEADERS)
             r.raise_for_status()
             res = r.json()["chart"]["result"][0]
+            meta = res.get("meta", {})
+            gmt = meta.get("gmtoffset", 0) or 0        # 交易所時區偏移(秒),小時線標籤需用
             ts = res.get("timestamp", []) or []
             q = res["indicators"]["quote"][0]
             payload["ts"] = list(ts)
-            payload["labels"] = [
-                datetime.fromtimestamp(t, tz=timezone.utc).strftime(spec["fmt"]) for t in ts]
+            payload["labels"] = format_labels(ts, spec["fmt"], gmt)
             payload["open"] = [self._f(x) for x in q.get("open", [])]
             payload["high"] = [self._f(x) for x in q.get("high", [])]
             payload["low"] = [self._f(x) for x in q.get("low", [])]
             payload["close"] = [self._f(x) for x in q.get("close", [])]
             payload["volume"] = [self._f(x) for x in q.get("volume", [])]
+            normalize_ohlcv(payload)      # 剔除 close=None 的 bar、volume 補 0
         except Exception as e:
+            log.warning("_ohlcv %s failed: %s", symbol, e)
             payload["error"] = str(e)
         self._ohlcv_cache[key] = (time.time(), payload)
         return payload
@@ -509,8 +837,8 @@ class Api:
 
         def one(sym):
             try:
-                r = self._session.get(YAHOO_SUMMARY.format(sym=sym, crumb=self._crumb),
-                                      timeout=12, headers=HEADERS)
+                r = self._http().get(YAHOO_SUMMARY.format(sym=sym, crumb=self._crumb),
+                                     timeout=12, headers=HEADERS)
                 if r.status_code != 200:
                     return sym, None
                 ce = r.json()["quoteSummary"]["result"][0].get("calendarEvents", {})
@@ -518,8 +846,8 @@ class Api:
                 if ed:
                     return sym, {"date": ed[0].get("fmt"),
                                  "estimate": bool(ce["earnings"].get("isEarningsDateEstimate"))}
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("get_earnings %s failed: %s", sym, e)
             return sym, None
 
         with ThreadPoolExecutor(max_workers=min(6, len(symbols))) as ex:
@@ -531,14 +859,20 @@ class Api:
     def _ensure_crumb(self):
         if self._crumb:
             return True
-        try:
-            self._session.get("https://fc.yahoo.com", timeout=10, headers=HEADERS)
-            crumb = self._session.get(YAHOO_CRUMB, timeout=10, headers=HEADERS).text.strip()
-            if crumb and "<" not in crumb and len(crumb) < 40:
-                self._crumb = crumb
+        with self._crumb_lock:                     # 只讓一條執行緒去抓 crumb,其餘等待後直接複用
+            if self._crumb:
                 return True
-        except Exception:
-            pass
+            try:
+                s = self._http()
+                s.get("https://fc.yahoo.com", timeout=10, headers=HEADERS)
+                crumb = s.get(YAHOO_CRUMB, timeout=10, headers=HEADERS).text.strip()
+                if crumb and "<" not in crumb and len(crumb) < 40:
+                    self._crumb = crumb
+                    # 存下取得 crumb 時的 cookies,供其他工作執行緒的新 session 注入(見 _http)
+                    self._crumb_cookies = [copy.copy(c) for c in s.cookies]
+                    return True
+            except Exception as e:
+                log.warning("_ensure_crumb failed: %s", e)
         return False
 
     # ---- AI 分析設定 ----
@@ -608,16 +942,33 @@ class Api:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             amount REAL NOT NULL, date TEXT NOT NULL,
             note TEXT, currency TEXT DEFAULT 'USD', created_at TEXT)""")
+        # 每日資產快照:歷史「被記錄的事實」,一日一幣別一列;同日重寫採 UPSERT。
+        conn.execute("""CREATE TABLE IF NOT EXISTS snapshots(
+            date TEXT NOT NULL, currency TEXT NOT NULL,
+            market_value REAL NOT NULL, cash_balance REAL NOT NULL,
+            portfolio_value REAL NOT NULL, fx REAL, detail TEXT, created_at TEXT,
+            PRIMARY KEY(date, currency))""")
+        # 手動估值資產(定存/保險/實體黃金等無行情資產):只記某日估值,不記損益。
+        conn.execute("""CREATE TABLE IF NOT EXISTS manual_assets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, currency TEXT DEFAULT 'USD', created_at TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS manual_valuations(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL,
+            date TEXT NOT NULL, value REAL NOT NULL, created_at TEXT)""")
         # 遷移:若舊資料庫缺 side 欄位,自動補上
         cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
         if "side" not in cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN side TEXT DEFAULT 'buy'")
             conn.execute("UPDATE transactions SET side='sell' WHERE quantity < 0")
             conn.execute("UPDATE transactions SET quantity=ABS(quantity)")
+        # 遷移:舊 transactions 缺 fee 欄位(手續費 + 交易稅),補上並預設 0
+        if "fee" not in cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN fee REAL DEFAULT 0")
         # 遷移:舊 deposits 缺 currency 欄位,補上並預設為美金
         dcols = [r[1] for r in conn.execute("PRAGMA table_info(deposits)").fetchall()]
         if "currency" not in dcols:
             conn.execute("ALTER TABLE deposits ADD COLUMN currency TEXT DEFAULT 'USD'")
+        conn.commit()   # 明確提交建表與遷移(UPDATE 屬 DML,不提交會在連線關閉時回滾)
         return conn
 
     @staticmethod
@@ -642,25 +993,51 @@ class Api:
         finally:
             conn.close()
 
-    def wallet_add(self, symbol, name, quantity, price, date_str, side="buy"):
+    def wallet_add(self, symbol, name, quantity, price, date_str, side="buy", fee=0):
         try:
             symbol = (symbol or "").strip().upper()
-            q, p = abs(float(quantity)), float(price)
-            side = side if side in ("buy", "sell") else "buy"
-            if not symbol or p < 0 or not date_str:
+            side = side if side in ("buy", "sell", "dividend", "stock_dividend", "adjust") else "buy"
+            raw_q, p, fee = float(quantity), float(price), abs(float(fee or 0))
+            # adjust(拆股/合股)保留正負號;其餘一律取正。
+            q = raw_q if side == "adjust" else abs(raw_q)
+            if not symbol or not date_str:
                 return {"ok": False, "error": "欄位不完整"}
-            if q == 0:
-                return {"ok": False, "error": "數量不可為 0"}
+            if side == "dividend":
+                q = 0.0                              # 現金股利:price 即配息總金額,股數固定 0
+                if p <= 0:
+                    return {"ok": False, "error": "配息金額必須大於 0"}
+            elif side in ("stock_dividend", "adjust"):
+                p = 0.0                              # 配股/拆股:成本不變,price 無意義
+                if abs(q) < 1e-12:
+                    return {"ok": False, "error": "股數不可為 0"}
+            else:                                    # buy / sell
+                if p < 0:
+                    return {"ok": False, "error": "欄位不完整"}
+                if q == 0:
+                    return {"ok": False, "error": "數量不可為 0"}
             conn = self._db()
             try:
                 with conn:
                     conn.execute(
-                        "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
-                        (symbol, name or symbol, side, q, p, date_str,
+                        "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (symbol, name or symbol, side, q, p, date_str, fee,
                          datetime.now().isoformat(timespec="seconds")))
+                # 補登偵測:交易日期早於該幣別最新快照 → 告知使用者(歷史圖仍以快照為準,
+                # 絕不靜默改寫已記錄的過去;分歧會在歷史圖以 reconcile 提示呈現)。
+                row = conn.execute("SELECT MAX(date) AS d FROM snapshots WHERE currency=?",
+                                   (self._ccy_of(symbol),)).fetchone()
+                backdated = bool(row and row["d"] and date_str < row["d"])
             finally:
                 conn.close()
-            return {"ok": True}
+            self._invalidate_history_cache()
+            return {"ok": True, "backdated": backdated}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def estimate_fee(self, price, quantity, side):
+        """台股手續費 + 交易稅預估(供 UI 填入,使用者可改)。委派純函式。"""
+        try:
+            return {"ok": True, "fee": wl.estimate_tw_fee(price, quantity, side)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -671,6 +1048,7 @@ class Api:
                 conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
         finally:
             conn.close()
+        self._invalidate_history_cache()
         return {"ok": True}
 
     def wallet_holdings(self):
@@ -699,22 +1077,182 @@ class Api:
             if not d.get("currency"):
                 d["currency"] = "USD"
 
+        manual = self.manual_assets_current()          # {USD:金額, TWD:金額}(各幣別最新估值合計)
         ccy_blocks = {}
         for ccy in ("USD", "TWD"):
             c_holds = [h for h in enriched if h["currency"] == ccy]
             c_txs = [t for t in txs if t["currency"] == ccy]
-            realized = wl.aggregate_holdings(c_txs)["total_realized_pnl"]
+            agg = wl.aggregate_holdings(c_txs)
+            realized = agg["total_realized_pnl"]
+            dividends = agg["total_dividends"]
             deps = sum(float(d["amount"]) for d in deposits
                        if (d.get("currency") or "USD") == ccy)
-            block = wl.summarize_currency(c_holds, realized, deps)
+            block = wl.summarize_currency(c_holds, realized, deps, dividends)
+            block["manual_assets"] = manual.get(ccy, 0.0)
+            block["net_worth"] = block["portfolio_value"] + manual.get(ccy, 0.0)
             block["day_date"] = next((h.get("market_date") for h in c_holds if h.get("market_date")), None)
             block["prev_date"] = next((h.get("prev_date") for h in c_holds if h.get("prev_date")), None)
+            block["realized_detail"] = wl.realized_breakdown(c_txs)   # 各標的已實現損益(含已平倉)
+            block["xirr"] = self._xirr_for(c_txs, deposits, ccy, block["portfolio_value"])
             ccy_blocks[ccy] = block
 
         fx = self._fx_twd_per_usd()   # 1 USD = fx TWD
         total = wl.combine_currencies(ccy_blocks["USD"], ccy_blocks["TWD"], fx)
+        self._write_snapshot(ccy_blocks, fx, enriched)   # 落地今日快照(歷史即事實)
         return {"fx": fx, "transactions": txs, "deposits": deposits,
                 "ccy": ccy_blocks, "total": total}
+
+    @staticmethod
+    def _xirr_for(c_txs, deposits, ccy, portfolio_value):
+        """該幣別的年化報酬 (XIRR):現金流 = 出入金(入金負、出金正)+ 期末淨值(正)。
+        持有 < 30 天或無解時 wl.compute_xirr 回 None,UI 顯示「—」。"""
+        flows = [(d["date"], -float(d["amount"])) for d in deposits
+                 if (d.get("currency") or "USD") == ccy and d.get("date")]
+        if not flows or portfolio_value is None:
+            return None
+        today = date.today().isoformat()
+        flows.append((today, float(portfolio_value)))
+        r = wl.compute_xirr(flows)
+        return r * 100 if r is not None else None       # 以百分比回傳
+
+    # ---- 每日快照(歷史即事實) ----
+    def _write_snapshot(self, ccy_blocks, fx, enriched):
+        """把今日各幣別淨值落地成快照(同日 UPSERT)。收盤前盤中值會被較新值覆蓋,
+        收盤後即穩定。跨日後不再改寫 —— 這使下市/改代號時過去區段不受回算影響。
+
+        寧缺勿錯:任一持倉報價缺失(market_value=None)就跳過該幣別 ——
+        total_value 是 sum(),缺報價會靜默低估,絕不能把失真數字寫成不可變紀錄。"""
+        try:
+            today = date.today().isoformat()
+            conn = self._db()
+            try:
+                with conn:
+                    for ccy, block in ccy_blocks.items():
+                        snap_date = block.get("day_date") or today
+                        mv = block.get("total_value")
+                        pv = block.get("portfolio_value")
+                        if mv is None or pv is None:
+                            continue
+                        c_holds = [h for h in enriched if h.get("currency") == ccy]
+                        if any(h.get("market_value") is None for h in c_holds):
+                            log.warning("snapshot %s skipped: missing quotes", ccy)
+                            continue
+                        detail = [{"symbol": h["symbol"], "qty": h.get("qty"),
+                                   "close": h.get("price"), "value": h.get("market_value")}
+                                  for h in c_holds]
+                        conn.execute(
+                            """INSERT INTO snapshots(date,currency,market_value,cash_balance,
+                               portfolio_value,fx,detail,created_at)
+                               VALUES(?,?,?,?,?,?,?,?)
+                               ON CONFLICT(date,currency) DO UPDATE SET
+                               market_value=excluded.market_value, cash_balance=excluded.cash_balance,
+                               portfolio_value=excluded.portfolio_value, fx=excluded.fx,
+                               detail=excluded.detail, created_at=excluded.created_at""",
+                            (snap_date, ccy, mv, pv - mv, pv, fx,
+                             json.dumps(detail, ensure_ascii=False),
+                             datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+        except Exception as e:
+            log.warning("write snapshot failed: %s", e)
+
+    def _read_snapshots(self, ccy):
+        """讀取某幣別的每日快照,依日期升冪。回傳 [{date, market_value, portfolio_value, fx}]。"""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT date, market_value, portfolio_value, fx FROM snapshots WHERE currency=? ORDER BY date",
+                (ccy,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def _snapshot_fx_series(self):
+        """各日期的 USD→TWD 匯率(取自 TWD 快照),供合併歷史折算。回傳 {date: fx}。"""
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                "SELECT date, fx FROM snapshots WHERE currency='TWD' AND fx IS NOT NULL").fetchall()
+            return {r["date"]: r["fx"] for r in rows}
+        finally:
+            conn.close()
+
+    # ---- 手動估值資產(定存/保險/實體資產等) ----
+    def manual_asset_list(self):
+        """所有手動資產及其最新估值。回傳 [{id, name, currency, value, date}]。"""
+        conn = self._db()
+        try:
+            assets = [dict(r) for r in conn.execute(
+                "SELECT * FROM manual_assets ORDER BY id").fetchall()]
+            out = []
+            for a in assets:
+                v = conn.execute(
+                    "SELECT value, date FROM manual_valuations WHERE asset_id=? ORDER BY date DESC, id DESC LIMIT 1",
+                    (a["id"],)).fetchone()
+                out.append({"id": a["id"], "name": a["name"],
+                            "currency": a.get("currency") or "USD",
+                            "value": v["value"] if v else None,
+                            "date": v["date"] if v else None})
+            return out
+        finally:
+            conn.close()
+
+    def manual_asset_add(self, name, currency="USD", value=None, date_str=None):
+        try:
+            name = (name or "").strip()
+            if not name:
+                return {"ok": False, "error": "請輸入資產名稱"}
+            currency = "TWD" if str(currency).upper() == "TWD" else "USD"
+            conn = self._db()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "INSERT INTO manual_assets(name,currency,created_at) VALUES(?,?,?)",
+                        (name, currency, datetime.now().isoformat(timespec="seconds")))
+                    aid = cur.lastrowid
+                    if value not in (None, ""):
+                        conn.execute(
+                            "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                            (aid, date_str or date.today().isoformat(), float(value),
+                             datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def manual_asset_set_value(self, asset_id, value, date_str=None):
+        try:
+            conn = self._db()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                        (int(asset_id), date_str or date.today().isoformat(), float(value),
+                         datetime.now().isoformat(timespec="seconds")))
+            finally:
+                conn.close()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def manual_asset_delete(self, asset_id):
+        conn = self._db()
+        try:
+            with conn:
+                conn.execute("DELETE FROM manual_valuations WHERE asset_id=?", (asset_id,))
+                conn.execute("DELETE FROM manual_assets WHERE id=?", (asset_id,))
+        finally:
+            conn.close()
+        return {"ok": True}
+
+    def manual_assets_current(self):
+        """各幣別手動資產最新估值合計。回傳 {USD: float, TWD: float}。"""
+        out = {"USD": 0.0, "TWD": 0.0}
+        for a in self.manual_asset_list():
+            if a["value"] is not None:
+                out[a["currency"]] = out.get(a["currency"], 0.0) + float(a["value"])
+        return out
 
     def wallet_history(self):
         """回傳 {USD:{...}, TWD:{...}},各幣別的歷史錢包價值與每日損益分開計算。"""
@@ -730,8 +1268,13 @@ class Api:
         syms = list({t["symbol"] for t in txs})
 
         def fetch(sym):
+            now = time.time()
+            with self._history_lock:
+                hit = self._history_cache.get(sym)
+            if hit and now - hit[0] < WALLET_HISTORY_TTL:
+                return sym, hit[1]
             try:
-                r = self._session.get(
+                r = self._http().get(
                     YAHOO_CHART_Q.format(sym=sym, query=f"period1={p1}&period2={p2}&interval=1d"),
                     timeout=14, headers=HEADERS)
                 res = r.json()["chart"]["result"][0]
@@ -739,8 +1282,11 @@ class Api:
                 closes = res["indicators"]["quote"][0].get("close", []) or []
                 series = [(datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d"), float(c))
                           for t, c in zip(ts, closes) if c is not None]
+                with self._history_lock:
+                    self._history_cache[sym] = (now, series)
                 return sym, series
-            except Exception:
+            except Exception as e:
+                log.warning("wallet_history fetch %s failed: %s", sym, e)
                 return sym, []
 
         prices = {}
@@ -756,12 +1302,56 @@ class Api:
         for ccy in ("USD", "TWD"):
             c_txs = [t for t in txs if t["currency"] == ccy]
             if not any(t.get("date") for t in c_txs):
-                out[ccy] = dict(empty)
+                out[ccy] = dict(empty, reconcile_warning=None)
                 continue
             c_prices = {s: v for s, v in prices.items() if self._ccy_of(s) == ccy}
             c_deps = [d for d in deps if (d.get("currency") or "USD") == ccy]
-            out[ccy] = wl.build_history(c_txs, c_prices, c_deps)
+            recomputed = wl.build_history(c_txs, c_prices, c_deps)
+            # 快照優先:已落地的過去不因回算失真而改變(核心訴求)。
+            merged = wl.merge_snapshot_history(self._read_snapshots(ccy), recomputed)
+            self._add_manual_assets_to_history(merged, ccy)   # 淨資產:疊加手動資產逐日估值
+            out[ccy] = merged
+
+        # 跨幣別合併總淨值曲線(美金計)。fx 歷史優先取 TWD=X 日線(涵蓋快照前的過去),
+        # 疊加每日快照 fx,今日再補即時匯率。無台幣資產則不需匯率(省一次網路)。
+        has_twd = any(t["currency"] == "TWD" for t in txs)
+        fx_series = {}
+        if has_twd:
+            _, fx_daily = fetch("TWD=X")               # [(date, close)];close = 1USD 兌 TWD
+            fx_series = {d: c for d, c in fx_daily}
+        fx_series.update(self._snapshot_fx_series())    # 快照 fx 覆蓋對應日
+        live_fx = self._fx_twd_per_usd()
+        if live_fx:
+            fx_series[date.today().isoformat()] = live_fx
+        out["TOTAL"] = wl.combine_history(out["USD"], out["TWD"], fx_series)
         return out
+
+    def _add_manual_assets_to_history(self, hist, ccy):
+        """把該幣別手動資產的逐日估值(前向填補)疊加到淨值曲線 portfolio_value。
+        手動資產只記估值、不記損益 —— 直接抬升淨資產線,不影響 daily_pnl(市值變化)。"""
+        dates = hist.get("dates") or []
+        if not dates:
+            return
+        conn = self._db()
+        try:
+            rows = conn.execute(
+                """SELECT v.asset_id, v.date, v.value FROM manual_valuations v
+                   JOIN manual_assets a ON a.id = v.asset_id
+                   WHERE COALESCE(a.currency,'USD')=? ORDER BY v.date""", (ccy,)).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return
+        by_asset = defaultdict(dict)
+        for r in rows:
+            by_asset[r["asset_id"]][r["date"]] = r["value"]
+        add = [0.0] * len(dates)
+        for series in by_asset.values():
+            filled = wl._forward_fill(dates, series, before=0.0)
+            for i, v in enumerate(filled):
+                add[i] += v
+        hist["portfolio_value"] = [
+            (pv + a) if pv is not None else None for pv, a in zip(hist["portfolio_value"], add)]
 
     def deposit_list(self):
         conn = self._db()
@@ -809,15 +1399,155 @@ class Api:
         finally:
             conn.close()
 
+    # ---- 期間報表(月報 / 年報) ----
+    def wallet_report(self, period="monthly"):
+        """各幣別的期間淨值彙總 + 年度已實現損益(含股息)。純數學委派 wallet.py。"""
+        period = "yearly" if period == "yearly" else "monthly"
+        hist = self.wallet_history()
+        txs = self.wallet_list()
+        for t in txs:
+            t["currency"] = self._ccy_of(t["symbol"])
+        deps = self.deposit_list()
+        out = {}
+        for ccy in ("USD", "TWD"):
+            h = hist.get(ccy) or {}
+            c_deps = [d for d in deps if (d.get("currency") or "USD") == ccy]
+            periods = wl.summarize_periods(h.get("dates", []), h.get("portfolio_value", []),
+                                           c_deps, period=period)
+            c_txs = [t for t in txs if t["currency"] == ccy]
+            out[ccy] = {"periods": periods, "realized_years": wl.realized_by_year(c_txs)}
+        return out
+
+    # ---- 資料庫自動備份(全部資產歷史的唯一來源,必須有備援) ----
+    def _backups_dir(self):
+        d = os.path.join(data_dir(), "backups")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def auto_backup(self, keep=30):
+        """啟動時若當日尚無備份 → 以 SQLite backup API 複製 wallet.db,保留最近 keep 份。"""
+        try:
+            src = _file("wallet.db")
+            if not os.path.exists(src):
+                return {"ok": False, "error": "尚無資料庫"}
+            dst = os.path.join(self._backups_dir(), f"wallet-{date.today().isoformat()}.db")
+            if os.path.exists(dst):
+                return {"ok": True, "skipped": True}
+            self._backup_db_to(src, dst)
+            self._prune_backups(keep)
+            return {"ok": True, "path": dst}
+        except Exception as e:
+            log.warning("auto_backup failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _backup_db_to(src, dst):
+        """用 SQLite 線上備份 API 安全複製(即使有連線寫入中也一致)。"""
+        s = sqlite3.connect(src)
+        d = sqlite3.connect(dst)
+        try:
+            with d:
+                s.backup(d)
+        finally:
+            s.close()
+            d.close()
+
+    def _prune_backups(self, keep):
+        files = sorted(f for f in os.listdir(self._backups_dir())
+                       if f.startswith("wallet-") and f.endswith(".db"))
+        for f in files[:-keep] if keep > 0 else []:
+            try:
+                os.remove(os.path.join(self._backups_dir(), f))
+            except OSError:
+                pass
+
+    def list_backups(self):
+        try:
+            files = sorted((f for f in os.listdir(self._backups_dir())
+                            if f.startswith("wallet-") and f.endswith(".db")), reverse=True)
+            return [{"name": f, "path": os.path.join(self._backups_dir(), f)} for f in files]
+        except OSError:
+            return []
+
+    def open_backups_folder(self):
+        try:
+            os.startfile(self._backups_dir())    # noqa: S606 (Windows 桌面 app 開資料夾)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def restore_backup(self, path):
+        """還原備份:先把現行 db 另存 pre-restore,再覆蓋。呼叫後前端須重新載入錢包。"""
+        try:
+            if not path or not os.path.exists(path):
+                return {"ok": False, "error": "找不到備份檔"}
+            cur = _file("wallet.db")
+            if os.path.exists(cur):
+                self._backup_db_to(cur, os.path.join(
+                    self._backups_dir(), f"wallet-prerestore-{datetime.now():%Y%m%d-%H%M%S}.db"))
+            self._backup_db_to(path, cur)
+            self._invalidate_history_cache()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---- 券商對帳單 CSV 匯入(降低逐筆輸入摩擦) ----
+    def wallet_import_csv(self):
+        """開檔選 CSV → 解析 + 與現有交易去重 → 直接寫入非重複列。
+
+        欄位對應(標頭不分大小寫,接受中英):date/日期, symbol/代號, side/買賣,
+        quantity/股數, price/價格, fee/費用。side 接受 buy/sell/買/賣。
+        以 (date, symbol, side, quantity, price) 全等視為重複並跳過。
+        """
+        try:
+            win = webview.windows[0]
+            paths = win.create_file_dialog(webview.OPEN_DIALOG, file_types=("CSV (*.csv)",))
+            if not paths:
+                return {"ok": False, "error": "已取消"}
+            path = paths[0] if isinstance(paths, (list, tuple)) else paths
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                text = f.read()
+            parsed = wl.parse_csv_transactions(text)
+            rows, errors = parsed["rows"], parsed["errors"]
+            if not rows:
+                return {"ok": False, "error": "未解析到有效交易列;請確認標頭含 日期/代號/買賣/股數/價格"}
+            existing = {(t.get("date"), (t.get("symbol") or "").upper(), t.get("side"),
+                         round(float(t.get("quantity") or 0), 8), round(float(t.get("price") or 0), 8))
+                        for t in self.wallet_list()}
+            inserted = skipped = 0
+            conn = self._db()
+            try:
+                with conn:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    for r in rows:
+                        key = (r["date"], r["symbol"].upper(), r["side"],
+                               round(r["quantity"], 8), round(r["price"], 8))
+                        if key in existing:
+                            skipped += 1
+                            continue
+                        existing.add(key)
+                        conn.execute(
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (r["symbol"].upper(), r.get("name") or r["symbol"].upper(), r["side"],
+                             r["quantity"], r["price"], r["date"], r.get("fee", 0.0), now))
+                        inserted += 1
+            finally:
+                conn.close()
+            self._invalidate_history_cache()
+            return {"ok": True, "inserted": inserted, "skipped": skipped, "errors": errors}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ---- 匯入 / 匯出 ----
     def export_data(self, sections):
         try:
             sections = sections or []
-            data = {"app": APP_NAME, "version": 1,
+            data = {"app": APP_NAME, "version": 2,
                     "exported_at": datetime.now().isoformat(timespec="seconds")}
             if "transactions" in sections:
-                data["transactions"] = self.wallet_list()
+                data["transactions"] = self.wallet_list()   # 含 fee 欄位與新 side
                 data["deposits"] = self.deposit_list()
+                data["manual_assets"] = self._export_manual_assets()
             if "holdings" in sections:
                 data["holdings"] = wl.aggregate_holdings(self.wallet_list())["holdings"]
             if "watchlist" in sections:
@@ -875,9 +1605,12 @@ class Api:
                                      d.get("created_at") or now))
                     finally:
                         conn.close()
+                if "manual_assets" in data:
+                    self._import_manual_assets(data["manual_assets"])
             elif "holdings" in sections and "holdings" in data:
                 self._replace_transactions(None, data.get("holdings"))
                 applied.append("持有標的")
+            self._invalidate_history_cache()   # 交易/持倉被取代,歷史日線快取失效
             return {"ok": True, "applied": applied}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -893,17 +1626,56 @@ class Api:
                         # 向下相容:若舊備份無 side,由 quantity 正負推導
                         raw_q = float(t.get("quantity", 0))
                         side = t.get("side") or ("buy" if raw_q >= 0 else "sell")
+                        # adjust(拆股)保留正負號;其餘取正
+                        q = raw_q if side == "adjust" else abs(raw_q)
                         conn.execute(
-                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
-                            (t.get("symbol"), t.get("name"), side, abs(raw_q),
-                             float(t.get("price", 0)), t.get("date"), t.get("created_at") or now))
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                            (t.get("symbol"), t.get("name"), side, q,
+                             float(t.get("price", 0)), t.get("date"),
+                             abs(float(t.get("fee") or 0)), t.get("created_at") or now))
                 elif holdings:
                     today = date.today().isoformat()
                     for h in holdings:
                         conn.execute(
-                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,created_at) VALUES(?,?,?,?,?,?,?)",
+                            "INSERT INTO transactions(symbol,name,side,quantity,price,date,fee,created_at) VALUES(?,?,?,?,?,?,?,?)",
                             (h.get("symbol"), h.get("name"), "buy", float(h.get("qty", 0)),
-                             float(h.get("avg_cost", 0)), today, now))
+                             float(h.get("avg_cost", 0)), today, 0.0, now))
+        finally:
+            conn.close()
+
+    def _export_manual_assets(self):
+        """匯出手動資產與其完整估值歷史(供 import 還原)。"""
+        conn = self._db()
+        try:
+            out = []
+            for a in conn.execute("SELECT * FROM manual_assets ORDER BY id").fetchall():
+                vals = conn.execute(
+                    "SELECT date, value FROM manual_valuations WHERE asset_id=? ORDER BY date",
+                    (a["id"],)).fetchall()
+                out.append({"name": a["name"], "currency": a["currency"] or "USD",
+                            "valuations": [{"date": v["date"], "value": v["value"]} for v in vals]})
+            return out
+        finally:
+            conn.close()
+
+    def _import_manual_assets(self, assets):
+        """以匯入內容取代所有手動資產(整批置換,與交易/存款一致的還原語義)。"""
+        conn = self._db()
+        try:
+            with conn:
+                conn.execute("DELETE FROM manual_valuations")
+                conn.execute("DELETE FROM manual_assets")
+                now = datetime.now().isoformat(timespec="seconds")
+                for a in assets or []:
+                    cur = conn.execute(
+                        "INSERT INTO manual_assets(name,currency,created_at) VALUES(?,?,?)",
+                        (a.get("name") or "資產",
+                         "TWD" if str(a.get("currency", "USD")).upper() == "TWD" else "USD", now))
+                    aid = cur.lastrowid
+                    for v in a.get("valuations") or []:
+                        conn.execute(
+                            "INSERT INTO manual_valuations(asset_id,date,value,created_at) VALUES(?,?,?,?)",
+                            (aid, v.get("date"), float(v.get("value", 0)), now))
         finally:
             conn.close()
 
@@ -913,8 +1685,8 @@ class Api:
         if not q:
             return []
         try:
-            r = requests.get(YAHOO_SEARCH.format(q=requests.utils.quote(q)),
-                             timeout=10, headers=HEADERS)
+            r = self._http().get(YAHOO_SEARCH.format(q=requests.utils.quote(q)),
+                                 timeout=10, headers=HEADERS)
             r.raise_for_status()
             out = []
             for it in r.json().get("quotes", []):
@@ -928,7 +1700,8 @@ class Api:
                     "type": it.get("quoteType") or "",
                 })
             return out
-        except Exception:
+        except Exception as e:
+            log.warning("search_symbol %r failed: %s", q, e)
             return []
 
     # ---- 系統通知 ----

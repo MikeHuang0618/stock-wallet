@@ -108,9 +108,10 @@ def build_ai_request(provider, model, api_key, prompt, max_tokens=400):
              "messages": [{"role": "user", "content": prompt}]},
         )
     if provider == "gemini":
+        # 金鑰走 x-goog-api-key header,不放 URL query(URL 易被記進 log/proxy/歷程)。
         return (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-            {"content-type": "application/json"},
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            {"content-type": "application/json", "x-goog-api-key": api_key},
             {"contents": [{"parts": [{"text": prompt}]}],
              "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.3}},
         )
