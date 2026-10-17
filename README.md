@@ -47,6 +47,11 @@ Download from [**Releases**](https://github.com/MikeHuang0618/stock-wallet/relea
 
 Requires 64-bit Windows 10/11 (WebView2 is built in).
 
+**Updating:** from v0.10.0 on, open **Settings → 版本與更新 → 檢查更新**. The installer build
+downloads the new `StockWallet-Setup.exe`, verifies its SHA-256 and installs it silently, then
+reopens the app (Windows asks for administrator permission once). The portable build opens the
+download page. Your data in `%APPDATA%\StockWallet\` is never touched by updates.
+
 ### ⚠️ Windows may flag the download (false positive)
 
 Stock Wallet is an **unsigned** app packaged with PyInstaller, so Windows Defender /
@@ -98,9 +103,11 @@ pyinstaller --noconfirm --onedir --windowed --name StockWallet ^
 ISCC.exe installer\StockWallet.iss     # needs Inno Setup → installer\Output\StockWallet-Setup.exe
 ```
 
-CI automates this: pushing a `v*` tag (e.g. `git tag v0.7.0 && git push origin v0.7.0`)
-runs the tests, builds the app (onedir), produces the installer + a portable zip, and
-attaches them to a GitHub Release.
+CI automates this: bump `version.py`, commit, then push a matching `v*` tag
+(e.g. `git tag v0.10.0 && git push origin v0.10.0`). The workflow refuses a tag that does not
+match `version.py`, runs the tests, builds the app (onedir), produces the installer + a
+portable zip + `SHA256SUMS.txt`, and attaches them to a GitHub Release. The in-app updater
+reads that release, so keep the asset names unchanged.
 
 ---
 
@@ -112,6 +119,8 @@ api.py            Backend Api (js_api): quotes / wallet / AI / import-export I/O
 indicators.py     Pure technical indicators (SMA/EMA/RSI/KD/MACD/Bollinger/OBV)
 analysis.py       Pure: chart range resolver + AI provider request builders
 wallet.py         Pure: holdings, realized P&L, currency aggregation, value history
+updater.py        Pure: version compare, release asset / SHA-256 selection, trusted hosts
+version.py        App version (single source of truth for releases and the updater)
 web/              Frontend: index.html · styles.css · app.js
 tests/            Golden tests (asserted against hand-computed values)
 installer/        Inno Setup installer script

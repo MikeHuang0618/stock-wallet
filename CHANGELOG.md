@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **In-app updates** — Settings → "版本與更新" checks GitHub Releases (also once a day on
+  startup, can be turned off) and shows the release notes. Installer builds download
+  `StockWallet-Setup.exe`, verify its SHA-256 (GitHub asset digest or the new
+  `SHA256SUMS.txt` release asset) and run it silently; the app closes and reopens on the new
+  version. Portable / source builds open the download page instead. Downloads are only
+  accepted from GitHub hosts over https. Pure logic in `updater.py`; version in `version.py`.
 - **Asset-history overhaul** — the wallet now *records* history instead of only
   recomputing it from live prices ([docs/asset-history-gaps.md](docs/asset-history-gaps.md)):
   - **Daily snapshots** — each session writes an immutable per-currency net-worth
@@ -52,10 +58,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-file exe, which trips far fewer antivirus false positives; documented Windows
   Defender / SmartScreen handling in the README.
 
+### Performance
+- Wallet page no longer reloads history and reports on every 2-minute quote push (only the
+  holdings refresh); history + report are computed in one call (`wallet_history_report`).
+- Quotes fetched by the background refresher are reused for wallet valuation and FX (90 s),
+  and the FX quote is fetched in the same batch as holdings.
+- SQLite schema/migration checks run once per database instead of on every connection;
+  manual-asset listing is a single query instead of N+1.
+- Quote pushes only re-render the visible page; the ticker detail page updates its header
+  instead of rebuilding every chart; crosshair tracking is frame-throttled.
+
+### Changed
+- UI/UX pass: Gold page yearly calendar now actually renders and follows the current year;
+  calendar year list and quick-range buttons are no longer hard-coded to 2025–2030;
+  close-price line is now distinct from MA20; light-theme pie hole, ±2x badge contrast and
+  muted-text contrast (WCAG AA) fixed; TWD amounts no longer overflow wallet cards;
+  realized P&L in the holdings list shown inline instead of an orphan "—" row; manual asset
+  valuation is edited inline instead of a browser prompt; wallet load failure has a retry.
+
 ### Fixed
 - Wallet DB migrations (`side`/`fee`/`currency` back-fill) are now explicitly committed;
   previously the `UPDATE`s that convert legacy signed quantities to buy/sell rows could roll
   back on connection close, leaving old databases un-migrated.
+- Settings files are now written atomically — a failed write can no longer corrupt
+  `watchlist.json` (which made the app silently fall back to, and overwrite with, defaults).
+- Saving AI settings no longer erases manual `models` overrides in `ai_config.json`.
+- Export / import now include the Taiwan watchlist (`watchlist_tw`).
+- Replaced deprecated `datetime.utcfromtimestamp` in quote parsing (Python 3.12+).
 - Daily snapshots are skipped for a currency when any of its holdings is missing a quote —
   a network/Yahoo outage can no longer record an understated market value as the immutable
   history (the old guard checked a sum that could never be `None`).

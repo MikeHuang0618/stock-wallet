@@ -20,6 +20,15 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Check tag matches version.py
+        shell: bash
+        run: |
+          v=$(python -c "from version import __version__; print(__version__)")
+          if [ "v$v" != "${{ github.ref_name }}" ]; then
+            echo "::error::Tag ${{ github.ref_name }} does not match version.py ($v). Bump version.py before tagging."
+            exit 1
+          fi
+
       - name: Install deps
         run: pip install -r requirements-dev.txt
 
@@ -43,10 +52,19 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=${{ github.ref_name }} installer\StockWallet.iss
 
+      - name: Write SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $files = @("installer/Output/StockWallet-Setup.exe", "StockWallet-portable-${{ github.ref_name }}.zip")
+          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf) }
+          [IO.File]::WriteAllText("SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content SHA256SUMS.txt
+
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             installer/Output/StockWallet-Setup.exe
             StockWallet-portable-${{ github.ref_name }}.zip
+            SHA256SUMS.txt
           generate_release_notes: true

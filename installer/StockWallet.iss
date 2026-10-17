@@ -44,3 +44,4 @@ Name: "{autodesktop}\Stock Wallet"; Filename: "{app}\StockWallet.exe"; Tasks: de
 
 [Run]
 Filename: "{app}\StockWallet.exe"; Description: "{cm:LaunchProgram,Stock Wallet}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\StockWallet.exe"; Flags: nowait skipifnotsilent

@@ -16,9 +16,12 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import webbrowser
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
@@ -41,8 +44,10 @@ except Exception:
 import indicators as ta
 import analysis
 import signals as sig
+import updater
 import wallet as wl
 from analysis import TIMEFRAMES, DEFAULT_AI_PROMPT, PROVIDER_MODELS
+from version import __version__ as APP_VERSION
 
 try:
     from winotify import Notification, audio
@@ -60,6 +65,10 @@ YAHOO_CRUMB = "https://query1.finance.yahoo.com/v1/test/getcrumb"
 YAHOO_CHART_Q = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?{query}"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
+UPDATE_CHECK_TTL = 600
+QUOTE_REUSE_TTL = 90
+FX_SYMBOL = "TWD=X"
+GITHUB_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": f"StockWallet/{APP_VERSION}"}
 WALLET_HISTORY_TTL = 600   # 錢包歷史日線快取存活秒數(停留在錢包頁時避免每 120 秒全量重抓)
 
 log = logging.getLogger("stockwallet")
@@ -394,6 +403,12 @@ class Api:
         self._history_cache = {}            # symbol -> (fetched_at, series);TTL WALLET_HISTORY_TTL
         self._history_lock = threading.Lock()
         self._refresher = None              # QuoteRefresher(背景報價推送),首次呼叫時 lazy 啟動
+        self._update_cache = None
+        self._schema_ready = set()
+        self._quote_cache = {}
+        self._quote_lock = threading.Lock()
+        self._update_lock = threading.Lock()
+        self._updating = False
 
     def _http(self):
         """回傳當前執行緒專屬的 requests.Session(每執行緒一個,避免共用非執行緒安全物件)。
@@ -492,19 +507,36 @@ class Api:
             return default
 
     def _save(self, name, obj):
+        path = _file(name)
+        tmp = f"{path}.{os.getpid()}.tmp"
         try:
-            with open(_file(name), "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(obj, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
             return {"ok": True}
         except Exception as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             return {"ok": False, "error": str(e)}
 
     # ---- 報價 ----
-    def get_quotes(self, symbols):
+    def get_quotes(self, symbols, max_age=0):
         out = {}
         symbols = list(dict.fromkeys(symbols or []))
         if not symbols:
             return out
+        if max_age > 0:
+            now = time.time()
+            with self._quote_lock:
+                for s in symbols:
+                    hit = self._quote_cache.get(s)
+                    if hit and now - hit[0] < max_age and not hit[1].get("error"):
+                        out[s] = hit[1]
+            symbols = [s for s in symbols if s not in out]
+            if not symbols:
+                return out
 
         def fetch(sym):
             if sym == TW_VIX:
@@ -517,6 +549,10 @@ class Api:
             futs = {ex.submit(fetch, s): s for s in symbols}
             for f in as_completed(futs):
                 out[futs[f]] = f.result()
+        now = time.time()
+        with self._quote_lock:
+            for s in symbols:
+                self._quote_cache[s] = (now, out[s])
         return out
 
     # ---- 背景報價推送(QuoteRefresher)----
@@ -660,7 +696,7 @@ class Api:
             gmt = meta.get("gmtoffset", 0) or 0
             # 交易日以「交易所當地時區」為準 (utc 秒數 + gmtoffset 後取日期)
             def _sess_date(t):
-                return datetime.utcfromtimestamp(int(t) + gmt).strftime("%Y-%m-%d")
+                return datetime.fromtimestamp(int(t) + gmt, tz=timezone.utc).strftime("%Y-%m-%d")
             raw = data["indicators"]["quote"][0].get("close", []) or []
             # 對齊時間戳與收盤,保留每筆交易日 (排除尚未產生的 None 當日 bar)
             pairs = [(ts[i], float(raw[i])) for i in range(min(len(ts), len(raw)))
@@ -897,7 +933,12 @@ class Api:
         }
 
     def save_ai_config(self, cfg):
-        return self._save("ai_config.json", cfg or {})
+        cfg = dict(cfg or {})
+        if "models" not in cfg:
+            old = self._load("ai_config.json", {})
+            if isinstance(old, dict) and old.get("models"):
+                cfg["models"] = old["models"]
+        return self._save("ai_config.json", cfg)
 
     def ai_analyze(self, provider, prompt, symbol, timeframe, start=None, end=None, force=False):
         """呼叫選定的 AI 供應商,回傳精簡的買賣建議與目標價。
@@ -942,8 +983,16 @@ class Api:
 
     # ---- 錢包 / 持倉 (SQLite) ----
     def _db(self):
-        conn = sqlite3.connect(_file("wallet.db"))
+        path = _file("wallet.db")
+        conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
+        if path not in self._schema_ready:
+            self._init_schema(conn)
+            self._schema_ready.add(path)
+        return conn
+
+    @staticmethod
+    def _init_schema(conn):
         conn.execute("""CREATE TABLE IF NOT EXISTS transactions(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL, name TEXT, side TEXT DEFAULT 'buy',
@@ -980,7 +1029,6 @@ class Api:
         if "currency" not in dcols:
             conn.execute("ALTER TABLE deposits ADD COLUMN currency TEXT DEFAULT 'USD'")
         conn.commit()   # 明確提交建表與遷移(UPDATE 屬 DML,不提交會在連線關閉時回滾)
-        return conn
 
     @staticmethod
     def _ccy_of(symbol):
@@ -988,10 +1036,10 @@ class Api:
         s = (symbol or "").upper()
         return "TWD" if s.endswith(".TW") or s.endswith(".TWO") else "USD"
 
-    def _fx_twd_per_usd(self):
+    def _fx_twd_per_usd(self, max_age=0):
         """美元兌台幣匯率 (1 USD = ? TWD),用於把台幣資產折合美金計算總計。"""
         try:
-            p = self._fetch_one("TWD=X").get("price")
+            p = self.get_quotes([FX_SYMBOL], max_age=max_age)[FX_SYMBOL].get("price")
             return float(p) if p else None
         except Exception:
             return None
@@ -1070,7 +1118,7 @@ class Api:
         for t in txs:
             t["currency"] = self._ccy_of(t["symbol"])
         holds = wl.aggregate_holdings(txs)["holdings"]
-        quotes = self.get_quotes([h["symbol"] for h in holds]) if holds else {}
+        quotes = self.get_quotes([h["symbol"] for h in holds] + [FX_SYMBOL], max_age=QUOTE_REUSE_TTL)
 
         enriched = []
         for h in holds:
@@ -1107,7 +1155,7 @@ class Api:
             block["xirr"] = self._xirr_for(c_txs, deposits, ccy, block["portfolio_value"])
             ccy_blocks[ccy] = block
 
-        fx = self._fx_twd_per_usd()   # 1 USD = fx TWD
+        fx = self._fx_twd_per_usd(max_age=QUOTE_REUSE_TTL)   # 1 USD = fx TWD
         total = wl.combine_currencies(ccy_blocks["USD"], ccy_blocks["TWD"], fx)
         self._write_snapshot(ccy_blocks, fx, enriched)   # 落地今日快照(歷史即事實)
         return {"fx": fx, "transactions": txs, "deposits": deposits,
@@ -1193,18 +1241,14 @@ class Api:
         """所有手動資產及其最新估值。回傳 [{id, name, currency, value, date}]。"""
         conn = self._db()
         try:
-            assets = [dict(r) for r in conn.execute(
-                "SELECT * FROM manual_assets ORDER BY id").fetchall()]
-            out = []
-            for a in assets:
-                v = conn.execute(
-                    "SELECT value, date FROM manual_valuations WHERE asset_id=? ORDER BY date DESC, id DESC LIMIT 1",
-                    (a["id"],)).fetchone()
-                out.append({"id": a["id"], "name": a["name"],
-                            "currency": a.get("currency") or "USD",
-                            "value": v["value"] if v else None,
-                            "date": v["date"] if v else None})
-            return out
+            rows = conn.execute(
+                """SELECT a.id, a.name, a.currency, v.value, v.date FROM manual_assets a
+                   LEFT JOIN manual_valuations v ON v.id = (
+                       SELECT id FROM manual_valuations WHERE asset_id = a.id
+                       ORDER BY date DESC, id DESC LIMIT 1)
+                   ORDER BY a.id""").fetchall()
+            return [{"id": r["id"], "name": r["name"], "currency": r["currency"] or "USD",
+                     "value": r["value"], "date": r["date"]} for r in rows]
         finally:
             conn.close()
 
@@ -1331,7 +1375,7 @@ class Api:
             _, fx_daily = fetch("TWD=X")               # [(date, close)];close = 1USD 兌 TWD
             fx_series = {d: c for d, c in fx_daily}
         fx_series.update(self._snapshot_fx_series())    # 快照 fx 覆蓋對應日
-        live_fx = self._fx_twd_per_usd()
+        live_fx = self._fx_twd_per_usd(max_age=QUOTE_REUSE_TTL)
         if live_fx:
             fx_series[date.today().isoformat()] = live_fx
         out["TOTAL"] = wl.combine_history(out["USD"], out["TWD"], fx_series)
@@ -1411,10 +1455,15 @@ class Api:
             conn.close()
 
     # ---- 期間報表(月報 / 年報) ----
-    def wallet_report(self, period="monthly"):
+    def wallet_history_report(self, period="monthly"):
+        hist = self.wallet_history()
+        return {"history": hist, "report": self.wallet_report(period, hist)}
+
+    def wallet_report(self, period="monthly", hist=None):
         """各幣別的期間淨值彙總 + 年度已實現損益(含股息)。純數學委派 wallet.py。"""
         period = "yearly" if period == "yearly" else "monthly"
-        hist = self.wallet_history()
+        if hist is None:
+            hist = self.wallet_history()
         txs = self.wallet_list()
         for t in txs:
             t["currency"] = self._ccy_of(t["symbol"])
@@ -1497,6 +1546,7 @@ class Api:
                 self._backup_db_to(cur, os.path.join(
                     self._backups_dir(), f"wallet-prerestore-{datetime.now():%Y%m%d-%H%M%S}.db"))
             self._backup_db_to(path, cur)
+            self._schema_ready.discard(cur)
             self._invalidate_history_cache()
             return {"ok": True}
         except Exception as e:
@@ -1550,21 +1600,26 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     # ---- 匯入 / 匯出 ----
+    def _export_payload(self, sections):
+        sections = sections or []
+        data = {"app": APP_NAME, "version": 2,
+                "exported_at": datetime.now().isoformat(timespec="seconds")}
+        if "transactions" in sections:
+            data["transactions"] = self.wallet_list()   # 含 fee 欄位與新 side
+            data["deposits"] = self.deposit_list()
+            data["manual_assets"] = self._export_manual_assets()
+        if "holdings" in sections:
+            data["holdings"] = wl.aggregate_holdings(self.wallet_list())["holdings"]
+        if "watchlist" in sections:
+            data["watchlist"] = self.get_watchlist("us")
+            data["watchlist_tw"] = self.get_watchlist("tw")
+        if "keys" in sections:
+            data["keys"] = self.get_ai_config()["keys"]
+        return data
+
     def export_data(self, sections):
         try:
-            sections = sections or []
-            data = {"app": APP_NAME, "version": 2,
-                    "exported_at": datetime.now().isoformat(timespec="seconds")}
-            if "transactions" in sections:
-                data["transactions"] = self.wallet_list()   # 含 fee 欄位與新 side
-                data["deposits"] = self.deposit_list()
-                data["manual_assets"] = self._export_manual_assets()
-            if "holdings" in sections:
-                data["holdings"] = wl.aggregate_holdings(self.wallet_list())["holdings"]
-            if "watchlist" in sections:
-                data["watchlist"] = self.get_watchlist()
-            if "keys" in sections:
-                data["keys"] = self.get_ai_config()["keys"]
+            data = self._export_payload(sections)
             win = webview.windows[0]
             path = win.create_file_dialog(webview.SAVE_DIALOG,
                                           save_filename="stockwallet_backup.json",
@@ -1589,42 +1644,49 @@ class Api:
             path = paths[0] if isinstance(paths, (list, tuple)) else paths
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            applied = []
-            if "watchlist" in sections and "watchlist" in data:
-                self.save_watchlist(data["watchlist"])
-                applied.append("觀察名單")
-            if "keys" in sections and "keys" in data:
-                cfg = self.get_ai_config()
-                self.save_ai_config({"provider": cfg["provider"], "prompt": cfg["prompt"],
-                                     "keys": {**(cfg["keys"] or {}), **(data["keys"] or {})}})
-                applied.append("API 金鑰")
-            if "transactions" in sections and ("transactions" in data or "holdings" in data):
-                self._replace_transactions(data.get("transactions"), data.get("holdings"))
-                applied.append("錢包紀錄")
-                if "deposits" in data:
-                    conn = self._db()
-                    try:
-                        with conn:
-                            conn.execute("DELETE FROM deposits")
-                            now = datetime.now().isoformat(timespec="seconds")
-                            for d in data["deposits"]:
-                                conn.execute(
-                                    "INSERT INTO deposits(amount,date,note,currency,created_at) VALUES(?,?,?,?,?)",
-                                    (float(d.get("amount", 0)), d.get("date", ""),
-                                     d.get("note", ""),
-                                     "TWD" if str(d.get("currency", "USD")).upper() == "TWD" else "USD",
-                                     d.get("created_at") or now))
-                    finally:
-                        conn.close()
-                if "manual_assets" in data:
-                    self._import_manual_assets(data["manual_assets"])
-            elif "holdings" in sections and "holdings" in data:
-                self._replace_transactions(None, data.get("holdings"))
-                applied.append("持有標的")
-            self._invalidate_history_cache()   # 交易/持倉被取代,歷史日線快取失效
-            return {"ok": True, "applied": applied}
+            return {"ok": True, "applied": self._apply_import(data, sections)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def _apply_import(self, data, sections):
+        sections = sections or []
+        applied = []
+        if "watchlist" in sections and ("watchlist" in data or "watchlist_tw" in data):
+            if "watchlist" in data:
+                self.save_watchlist(data["watchlist"], "us")
+            if "watchlist_tw" in data:
+                self.save_watchlist(data["watchlist_tw"], "tw")
+            applied.append("觀察名單")
+        if "keys" in sections and "keys" in data:
+            cfg = self.get_ai_config()
+            self.save_ai_config({"provider": cfg["provider"], "prompt": cfg["prompt"],
+                                 "keys": {**(cfg["keys"] or {}), **(data["keys"] or {})}})
+            applied.append("API 金鑰")
+        if "transactions" in sections and ("transactions" in data or "holdings" in data):
+            self._replace_transactions(data.get("transactions"), data.get("holdings"))
+            applied.append("錢包紀錄")
+            if "deposits" in data:
+                conn = self._db()
+                try:
+                    with conn:
+                        conn.execute("DELETE FROM deposits")
+                        now = datetime.now().isoformat(timespec="seconds")
+                        for d in data["deposits"]:
+                            conn.execute(
+                                "INSERT INTO deposits(amount,date,note,currency,created_at) VALUES(?,?,?,?,?)",
+                                (float(d.get("amount", 0)), d.get("date", ""),
+                                 d.get("note", ""),
+                                 "TWD" if str(d.get("currency", "USD")).upper() == "TWD" else "USD",
+                                 d.get("created_at") or now))
+                finally:
+                    conn.close()
+            if "manual_assets" in data:
+                self._import_manual_assets(data["manual_assets"])
+        elif "holdings" in sections and "holdings" in data:
+            self._replace_transactions(None, data.get("holdings"))
+            applied.append("持有標的")
+        self._invalidate_history_cache()   # 交易/持倉被取代,歷史日線快取失效
+        return applied
 
     def _replace_transactions(self, transactions, holdings):
         conn = self._db()
@@ -1714,6 +1776,147 @@ class Api:
         except Exception as e:
             log.warning("search_symbol %r failed: %s", q, e)
             return []
+
+    def _install_kind(self):
+        return updater.install_kind(getattr(sys, "frozen", False), sys.executable)
+
+    def get_app_info(self):
+        return {"version": APP_VERSION, "install_kind": self._install_kind()}
+
+    def _latest_release(self, force=False):
+        hit = self._update_cache
+        if not force and hit and time.time() - hit[0] < UPDATE_CHECK_TTL:
+            return hit[1]
+        r = self._http().get(updater.LATEST_RELEASE_API, timeout=10, headers=GITHUB_HEADERS)
+        r.raise_for_status()
+        rel = r.json()
+        self._update_cache = (time.time(), rel)
+        return rel
+
+    def check_update(self, force=False):
+        try:
+            return updater.summarize_release(self._latest_release(force), APP_VERSION, self._install_kind())
+        except Exception as e:
+            log.warning("check_update failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def _fetch_text(self, url):
+        if not updater.is_trusted_download_url(url):
+            raise RuntimeError("下載來源不受信任")
+        r = self._http().get(url, timeout=15, headers=HEADERS)
+        r.raise_for_status()
+        return r.text
+
+    def _download_installer(self, release, progress):
+        ver = updater.parse_version(release.get("tag_name"))
+        if not ver:
+            raise RuntimeError("無法辨識的版本號")
+        asset = updater.select_asset(release, "installer")
+        if not asset:
+            raise RuntimeError("此版本沒有安裝檔")
+        expected = updater.expected_sha256(asset, None)
+        if not expected:
+            sums = updater.find_asset(release, updater.SUMS_NAME)
+            if sums:
+                expected = updater.expected_sha256(asset, self._fetch_text(sums.get("browser_download_url")))
+        if not expected:
+            raise RuntimeError("找不到 SHA-256 校驗值,已取消更新")
+        url = asset.get("browser_download_url")
+        if not updater.is_trusted_download_url(url):
+            raise RuntimeError("下載來源不受信任")
+        folder = os.path.join(os.environ.get("TEMP") or tempfile.gettempdir(), "StockWallet-update")
+        os.makedirs(folder, exist_ok=True)
+        dest = os.path.join(folder, "StockWallet-Setup-%d.%d.%d.exe" % ver)
+        part = dest + ".part"
+        try:
+            with self._http().get(url, stream=True, timeout=30, headers=HEADERS) as r:
+                r.raise_for_status()
+                if not updater.is_trusted_download_url(r.url):
+                    raise RuntimeError("下載來源不受信任")
+                total = int(r.headers.get("content-length") or asset.get("size") or 0)
+                done, last = 0, -1
+                with open(part, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=256 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        done += len(chunk)
+                        pct = min(99, done * 100 // total) if total else 0
+                        if pct != last:
+                            last = pct
+                            progress(pct)
+            if not updater.verify_file(part, expected):
+                raise RuntimeError("SHA-256 校驗失敗,已取消更新")
+            os.replace(part, dest)
+        except Exception:
+            for p in (part, dest):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            raise
+        progress(100)
+        return dest
+
+    def start_update(self):
+        with self._update_lock:
+            if self._updating:
+                return {"ok": False, "error": "更新進行中"}
+            if self._install_kind() != "installer":
+                return {"ok": False, "error": "可攜版請至下載頁更新"}
+            self._updating = True
+        threading.Thread(target=self._run_update, daemon=True).start()
+        return {"ok": True}
+
+    def _run_update(self):
+        try:
+            rel = self._latest_release()
+            if not updater.is_newer(rel.get("tag_name"), APP_VERSION):
+                raise RuntimeError("已是最新版本")
+            path = self._download_installer(rel, lambda p: self._push_update({"phase": "download", "pct": p}))
+            self._push_update({"phase": "install"})
+            self._launch_installer(path)
+            self._quit_app()
+        except Exception as e:
+            log.warning("update failed: %s", e)
+            self._push_update({"phase": "error", "error": str(e)})
+        finally:
+            self._updating = False
+
+    def _push_update(self, state):
+        try:
+            wins = getattr(webview, "windows", None)
+            if wins:
+                wins[0].evaluate_js(
+                    "window.onUpdateProgress&&window.onUpdateProgress(%s)" % json.dumps(state, ensure_ascii=False))
+        except Exception as e:
+            log.debug("push_update failed: %s", e)
+
+    @staticmethod
+    def _launch_installer(path):
+        args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS"
+        if hasattr(os, "startfile"):
+            os.startfile(path, "open", args)
+        else:
+            subprocess.Popen([path, *args.split()], close_fds=True)
+
+    def _quit_app(self):
+        if self._refresher:
+            self._refresher.stop()
+        time.sleep(1.5)
+        for w in list(getattr(webview, "windows", None) or []):
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+    def open_release_page(self, url=None):
+        target = url if updater.is_trusted_download_url(url) else updater.RELEASES_PAGE
+        try:
+            webbrowser.open(target)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     # ---- 系統通知 ----
     def notify(self, title, msg):
