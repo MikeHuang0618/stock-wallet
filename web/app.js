@@ -59,7 +59,7 @@ const PAGE_META={
   wallet:{t:'我的錢包',d:'資產總覽 · 持倉分布 · 買賣紀錄與總結'},
   gold:{t:'黃金訊號',d:'美股 / 台股 槓桿黃金 ETF 訊號 · CPI / 非農 / FOMC 影響評估'},
   calendar:{t:'重大事件',d:'各年度重大事件與財報日曆 · 自訂事件'},
-  settings:{t:'設定',d:'API 金鑰管理 · 資料匯入 / 匯出'},
+  settings:{t:'設定',d:'版本與更新 · 外觀 · API 金鑰 · 資料匯入 / 匯出 · 備份'},
   detail:{t:'標的詳細',d:'技術面圖表 · 均線 / 成交量 / KD / RSI / MACD 自選'},
 };
 const PIE_COLORS=['#e8c37a','#5bc0de','#c792ea','#38d39f','#ffb454','#ff6b6b','#7ec8ff','#f0a3c8','#a0e57a','#c0c4d0'];
@@ -457,7 +457,12 @@ function renderEventsInto(boxId,countId,events,limit){
   // 事件委派取代 inline onclick(相容 CSP):點事件卡跳到該日期的日曆。
   box.onclick=ev=>{const el=ev.target.closest('.ev[data-date]');if(el)openCalendarToDate(el.dataset.date);};
 }
-function renderEvents(){renderEventsInto('#events','#evcount',STATE.events,9);}
+function renderEvents(){
+  renderEventsInto('#events','#evcount',STATE.events,9);
+  const y=(STATE.today||'').slice(0,4)||String(new Date().getFullYear());
+  const t=$('#gold-cal-title');if(t)t.textContent=`${y} 全年交易日曆熱區`;
+  renderCalendarInto('#calendar',STATE.events,y);
+}
 function renderDashEvents(){
   renderEventsInto('#dash-events','#dash-evcount',activeEvents().concat(earningsEvents()),8);
   // 觀察個股財報清單
@@ -477,17 +482,30 @@ function renderDashEvents(){
       <div class="cd ${d===0?'today':''}"><div class="n">${d===0?'今天':d}</div><div class="u">${d<=0?'':'天後'}</div></div></div>`;
   }).join('');
 }
+function alertRows(){
+  return STATE.alerts.map((a,i)=>{
+    const now=(STATE.quotes[a.tk]||{}).price;
+    const hit=now!=null&&(a.cond==='above'?now>=a.lvl:now<=a.lvl);
+    return {a,i,now,hit};
+  });
+}
+function checkAlerts(){
+  const nowFiring=new Set(alertRows().filter(r=>r.hit).map(({a})=>a.tk+a.cond+a.lvl));
+  nowFiring.forEach(key=>{
+    if(!STATE.firing.has(key)){
+      const a=STATE.alerts.find(z=>z.tk+z.cond+z.lvl===key);
+      if(a){const meta=goldMeta(a.tk);
+        const now=(STATE.quotes[a.tk]||{}).price;
+        api().notify('🔔 價位訊號觸發',`${meta.short} ${a.cond==='above'?'突破':'跌破'} ${fmt(a.lvl)}(現價 ${fmt(now)})`);}
+    }
+  });
+  STATE.firing=nowFiring;
+}
 function renderAlerts(){
   const box=$('#alerts');
   if(!STATE.alerts.length){box.innerHTML='<div class="empty">尚未設定任何價位訊號 · 於上方新增</div>';return;}
-  const nowFiring=new Set();
   // 先算觸發狀態,觸發列排到頂部(只排顯示順序;data-i 保留原索引供刪除)
-  const rows=STATE.alerts.map((a,i)=>{
-    const now=(STATE.quotes[a.tk]||{}).price;
-    const hit=now!=null&&(a.cond==='above'?now>=a.lvl:now<=a.lvl);
-    if(hit)nowFiring.add(a.tk+a.cond+a.lvl);
-    return {a,i,now,hit};
-  });
+  const rows=alertRows();
   rows.sort((x,y)=>(y.hit?1:0)-(x.hit?1:0));   // 觸發者在前(V8 穩定排序保留同狀態原序)
   box.innerHTML=rows.map(({a,i,now,hit})=>{
     const meta=goldMeta(a.tk);
@@ -500,16 +518,6 @@ function renderAlerts(){
       <span class="st ${hit?'fire':'wait'}">${hit?'● 已觸發':'等待中'}</span><span class="x" data-i="${i}">✕</span></div>`;
   }).join('');
   box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{STATE.alerts.splice(+x.dataset.i,1);persistAlerts();renderAlerts();});
-  // 新觸發 -> 系統通知
-  nowFiring.forEach(key=>{
-    if(!STATE.firing.has(key)){
-      const a=STATE.alerts.find(z=>z.tk+z.cond+z.lvl===key);
-      if(a){const meta=goldMeta(a.tk);
-        const now=(STATE.quotes[a.tk]||{}).price;
-        api().notify('🔔 價位訊號觸發',`${meta.short} ${a.cond==='above'?'突破':'跌破'} ${fmt(a.lvl)}(現價 ${fmt(now)})`);}
-    }
-  });
-  STATE.firing=nowFiring;
 }
 function persistAlerts(){api().save_alerts(STATE.alerts);}
 function refreshAlertSymbols(){
@@ -523,9 +531,7 @@ function initAlertForm(){
     const tk=$('#a-tk').value,lvl=parseFloat($('#a-lvl').value),cond=$('#a-cond').value;
     if(isNaN(lvl)||lvl<=0){toast('請輸入有效價位');return;}
     STATE.alerts.push({tk,lvl,cond});persistAlerts();
-    STATE.firing.add(tk+cond+lvl); // 避免加入當下若已觸發立刻重複通知,交由下輪比較
-    STATE.firing.delete(tk+cond+lvl);
-    renderAlerts();$('#a-lvl').value='';
+    checkAlerts();renderAlerts();$('#a-lvl').value='';
     const meta=goldMeta(tk);
     api().notify('已新增價位訊號',`${meta.short} ${cond==='above'?'突破 ≥':'跌破 ≤'} ${fmt(lvl)}`);
     toast(`已新增 ${meta.short} 訊號`);
@@ -580,7 +586,9 @@ async function reloadEvents(){
   renderEvents();renderDashEvents();renderFullCalendar();renderCustomEvents();
 }
 function initCustomEventsForm(){
-  $('#cal-year-sel').onchange=renderFullCalendar;
+  const ys=$('#cal-year-sel'),cy=new Date().getFullYear();
+  ys.innerHTML=[cy-2,cy-1,cy,cy+1,cy+2].map(y=>`<option value="${y}"${y===cy?' selected':''}>${y}</option>`).join('');
+  ys.onchange=renderFullCalendar;
   $('#ce-date').value=(STATE.today||new Date().toISOString().slice(0,10));
   
   const applyCeCol=c=>{
@@ -612,7 +620,9 @@ function showCalDayEvents(date,force){
     <div class="ev"><div class="impact ${esc(e.impact||'')}"></div><div class="badge ${esc(e.type)}">${esc(e.type)}</div>
       <div class="body"><div class="t">${esc(e.title)}</div><div class="m">${e.time&&e.time!=='—'?esc(e.time)+' · ':''}${esc(TYPE_NAMES[e.type]||'自訂')}</div></div></div>`).join('')):'';
 }
-function renderCalendarInto(boxId,events,year='2026'){
+function renderCalendarInto(boxId,events,year){
+  if(!STATE.today)return;
+  year=String(year||STATE.today.slice(0,4));
   const byDate={},byDateFull={};
   events.forEach(e=>{if(e.date&&e.date.startsWith(year)){(byDate[e.date]=byDate[e.date]||[]).push(e.type);(byDateFull[e.date]=byDateFull[e.date]||[]).push(e);}});
   const [,tm,td]=STATE.today.split('-').map(Number);
@@ -733,9 +743,13 @@ function hideCross(){
   STATE.detail.charts.forEach(m=>{const v=m.wrap.querySelector('.cross-v');if(v)v.style.display='none';m.dots.forEach(d=>d.style.display='none');});
   const tip=$('#cross-tip');if(tip)tip.classList.remove('show');
 }
+function rafThrottle(fn){
+  let pending=null;
+  return e=>{const first=!pending;pending=e;if(first)requestAnimationFrame(()=>{const ev=pending;pending=null;fn(ev);});};
+}
 function initCrosshair(){
   const page=$('#page-detail');
-  page.addEventListener('mousemove',e=>{
+  page.addEventListener('mousemove',rafThrottle(e=>{
     const ms=STATE.detail.charts;if(!ms.length){hideCross();return;}   // 無圖表時也清掉滯留 tooltip
     const hov=ms.find(m=>{const r=m.wrap.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
     if(!hov){hideCross();return;}
@@ -745,7 +759,7 @@ function initCrosshair(){
     i=Math.max(0,Math.min(hov.g.n-1,i));
     ms.forEach(m=>drawCross(m,i));
     showCrossTip(ms,i,e);
-  });
+  }));
   page.addEventListener('mouseleave',hideCross);
 }
 function showCrossTip(models,i,e){
@@ -793,6 +807,8 @@ function initDetail(){
     STATE.detail.chartType=b.dataset.ct;syncDetailControls();if(STATE.detail.sym&&STATE.detail.data)renderDetail();});
   // 自訂區間
   $('#d-custom-toggle').onclick=()=>$('#d-range').classList.toggle('show');
+  const cy=new Date().getFullYear();
+  $('#d-range').querySelectorAll('[data-quick]').forEach((b,k)=>{b.dataset.quick=String(cy-1+k);b.textContent=`${cy-1+k} 年`;});
   $('#d-range').querySelectorAll('[data-quick]').forEach(b=>b.onclick=()=>{
     const y=b.dataset.quick;$('#d-start').value=`${y}-01-01`;$('#d-end').value=`${y}-12-31`;});
   $('#d-apply-range').onclick=()=>{
@@ -893,8 +909,8 @@ function renderDetail(){
     legend=[{name:'K 棒',color:'#9aa0b0',val:lastVal(data.close)}].concat(ovLegend);
     opts={height:250,labels:data.labels,candles:{open:data.open,high:data.high,low:data.low,close:data.close},lines:overlayLines,fmtY:v=>v.toFixed(2)};
   }else{
-    legend=[{name:'收盤',color:'#e8c37a',val:lastVal(data.close)}].concat(ovLegend);
-    opts={height:250,labels:data.labels,lines:[{name:'收盤',color:'#e8c37a',values:data.close,w:1.8}].concat(overlayLines),fmtY:v=>v.toFixed(2)};
+    legend=[{name:'收盤',color:'var(--ink)',val:lastVal(data.close)}].concat(ovLegend);
+    opts={height:250,labels:data.labels,lines:[{name:'收盤',color:'var(--ink)',values:data.close,w:1.8}].concat(overlayLines),fmtY:v=>v.toFixed(2)};
   }
   $('#d-price-legend').innerHTML=legendHTML(legend);
   mountChart($('#d-price-chart'),opts);
@@ -911,14 +927,14 @@ function renderDetail(){
 }
 function buildPanelOpts(name,pd,labels){
   if(name==='volume'){
-    const colors=pd.values.map((v,i)=>pd.up[i]?upColor():downColor());
+    const uc=upColor(),dc=downColor(),colors=pd.values.map((v,i)=>pd.up[i]?uc:dc);
     const lines=pd.ma?[{name:'均量20',color:'#e8c37a',values:pd.ma,w:1.4}]:[];
     const legend=legendHTML([{name:'成交量',color:'#7a8090'}].concat(pd.ma?[{name:'均量20',color:'#e8c37a',val:lastVal(pd.ma,fmtVol)}]:[]));
     return {legend,opts:{height:150,labels,bars:{values:pd.values,colors,baseline:'bottom'},lines,
       fmtY:fmtVol,barName:'成交量',barFmt:fmtVol}};
   }
   if(name==='macd'){
-    const hist=pd.hist,colors=hist.map(v=>v==null?'#666':v>=0?upColor():downColor());
+    const uc=upColor(),dc=downColor(),hist=pd.hist,colors=hist.map(v=>v==null?'#666':v>=0?uc:dc);
     const lines=[{name:'MACD',color:SERIES_COLOR.MACD,values:pd.series.MACD},{name:'Signal',color:SERIES_COLOR.Signal,values:pd.series.Signal}];
     const legend=legendHTML([{name:'MACD',color:SERIES_COLOR.MACD,val:lastVal(pd.series.MACD)},{name:'Signal',color:SERIES_COLOR.Signal,val:lastVal(pd.series.Signal)}]);
     return {legend,opts:{height:160,labels,bars:{values:hist,colors,baseline:'zero'},lines,zeroLine:true,
@@ -944,7 +960,7 @@ function svgPie(items){
     a=a2;
   });
   const legend=items.map(it=>`<div><i style="background:${it.color}"></i><span class="pie-k">${esc(it.label)}</span>${it.name&&it.name!==it.label?`<span class="pie-nm">${esc(it.name)}</span>`:''} <span style="color:var(--muted)">${(it.value/total*100).toFixed(1)}%</span></div>`).join('');
-  return `<div class="pie-wrap"><svg width="160" height="160" viewBox="0 0 160 160">${arcs}<circle cx="${cx}" cy="${cy}" r="34" fill="#12131a"/></svg><div class="pie-legend">${legend}</div></div>`;
+  return `<div class="pie-wrap"><svg width="160" height="160" viewBox="0 0 160 160">${arcs}<circle cx="${cx}" cy="${cy}" r="34" fill="var(--overlay-bg)"/></svg><div class="pie-legend">${legend}</div></div>`;
 }
 
 /* ---------- wallet ---------- */
@@ -955,11 +971,16 @@ async function loadWallet(){
   renderWallet();
   try{w.manual=await api().manual_asset_list();}catch(e){w.manual=null;}
   renderManualAssets();
-  try{w.history=await api().wallet_history();}catch(e){w.history=null;}
-  renderWalletCharts();
-  try{w.report=await api().wallet_report(w.reportPeriod||'monthly');}catch(e){w.report=null;}
-  renderReport();
+  let hr=null;try{hr=await api().wallet_history_report(w.reportPeriod||'monthly');}catch(e){hr=null;}
+  w.history=hr?hr.history:null;w.report=hr?hr.report:null;
+  renderWalletCharts();renderReport();
   w.loading=false;
+}
+async function refreshWalletHoldings(){
+  const w=STATE.wallet;if(w.loading||!w.data)return;w.loading=true;
+  try{const d=await api().wallet_holdings();if(d&&d.ccy)w.data=d;}catch(e){}
+  w.loading=false;
+  if(STATE.page==='wallet')renderWallet();
 }
 function renderManualAssets(){
   const list=STATE.wallet.manual||[],box=$('#manual-list');if(!box)return;
@@ -972,14 +993,24 @@ function renderManualAssets(){
       <span style="min-width:120px;font-weight:800">${esc(a.name)}</span>
       <span class="g tx-amt">${a.value==null?'未估值':money(a.value,ccy)}</span>
       <span class="g" style="min-width:92px">${a.date?esc(a.date):''}</span>
-      <button class="mini-btn" data-maval="${a.id}" data-maccy="${ccy}">更新估值</button>
+      <span class="ma-edit" data-maedit="${a.id}"><button class="mini-btn" data-maval="${a.id}">更新估值</button></span>
       <span class="del" data-madel="${a.id}">🗑 刪除</span></div>`;}).join('');
   box.querySelectorAll('[data-madel]').forEach(bn=>bn.onclick=()=>armDelete(bn,async()=>{
     await api().manual_asset_delete(+bn.dataset.madel);loadWallet();}));
-  box.querySelectorAll('[data-maval]').forEach(bn=>bn.onclick=async()=>{
-    const v=prompt('輸入最新估值:');if(v==null||v==='')return;
-    const r=await api().manual_asset_set_value(+bn.dataset.maval,v,STATE.today||null);
-    if(r.ok){toast('已更新估值');loadWallet();}else toast(r.error||'更新失敗');});
+  box.querySelectorAll('[data-maval]').forEach(bn=>bn.onclick=()=>{
+    const id=+bn.dataset.maval,slot=bn.parentNode,cur=(list.find(x=>x.id===id)||{}).value;
+    slot.innerHTML=`<input class="ma-input" type="number" step="any" min="0" value="${cur==null?'':cur}" aria-label="最新估值"><button class="mini-btn gold" data-ok>儲存</button><button class="mini-btn" data-cancel>取消</button>`;
+    const inp=slot.querySelector('input');inp.focus();inp.select();
+    const save=async()=>{
+      const v=inp.value.trim();if(v===''||isNaN(+v)||+v<0){toast('請輸入有效金額');inp.focus();return;}
+      slot.querySelectorAll('button').forEach(x=>x.disabled=true);
+      const r=await api().manual_asset_set_value(id,v,STATE.today||null);
+      if(r.ok){toast('已更新估值');loadWallet();}else{toast(r.error||'更新失敗');renderManualAssets();}
+    };
+    slot.querySelector('[data-ok]').onclick=save;
+    slot.querySelector('[data-cancel]').onclick=renderManualAssets;
+    inp.onkeydown=e=>{if(e.key==='Enter')save();else if(e.key==='Escape')renderManualAssets();};
+  });
 }
 function renderReport(){
   const rep=STATE.wallet.report,ccy=STATE.wallet.ccy,box=$('#report-body');if(!box)return;
@@ -1038,7 +1069,8 @@ function renderWalletPie(sel,holdings,ccy){
 }
 function renderWallet(){
   const d=STATE.wallet.data;
-  if(!d||!d.ccy){$('#wallet-summary').innerHTML='<div class="qcard"><div class="nm">無法載入</div></div>';return;}
+  if(!d||!d.ccy){$('#wallet-summary').innerHTML='<div class="qcard load-err"><div class="nm">錢包資料無法載入</div><button class="btn" data-retry>重試</button></div>';
+    const rb=$('#wallet-summary').querySelector('[data-retry]');if(rb)rb.onclick=loadWallet;return;}
   // 記錄三個清單的捲動位置,重建 innerHTML 後還原(避免 auto-refresh 把使用者捲回頂端)。
   const _scrollIds=['#wallet-holdings','#wallet-tx','#wallet-deposits'],_scroll={};
   _scrollIds.forEach(id=>{const el=$(id);if(el)_scroll[id]=el.scrollTop;});
@@ -1073,8 +1105,8 @@ function renderWallet(){
   $('#wallet-ccy-grid').innerHTML=`
     <div class="qcard"><div class="nm">💵 美金投入資金</div><div class="row"><div class="price">${money(U.total_deposits,'USD')}</div></div></div>
     <div class="qcard"><div class="nm">💵 持有美金錢包價值</div><div class="row"><div class="price ${_dcls(U.portfolio_return_pct)}">${money(U.portfolio_value,'USD')}</div><div class="chg ${_dcls(U.portfolio_return_pct)}">${_arr(U.portfolio_return_pct)} ${fmt(Math.abs(U.portfolio_return_pct||0))}%</div></div></div>
-    <div class="qcard"><div class="nm">🇹🇼 台幣投入資金</div><div class="row"><div class="price">${money(T.total_deposits,'TWD')}</div></div></div>
-    <div class="qcard"><div class="nm">🇹🇼 持有台幣錢包價值</div><div class="row"><div class="price ${_dcls(T.portfolio_return_pct)}">${money(T.portfolio_value,'TWD')}</div><div class="chg ${_dcls(T.portfolio_return_pct)}">${_arr(T.portfolio_return_pct)} ${fmt(Math.abs(T.portfolio_return_pct||0))}%</div></div></div>`;
+    <div class="qcard"><div class="nm">🇹🇼 台幣投入資金</div><div class="row"><div class="price">${money(T.total_deposits,'TWD',0)}</div></div></div>
+    <div class="qcard"><div class="nm">🇹🇼 持有台幣錢包價值</div><div class="row"><div class="price ${_dcls(T.portfolio_return_pct)}">${money(T.portfolio_value,'TWD',0)}</div><div class="chg ${_dcls(T.portfolio_return_pct)}">${_arr(T.portfolio_return_pct)} ${fmt(Math.abs(T.portfolio_return_pct||0))}%</div></div></div>`;
   // 收合列(捲動時顯示):當日/總投入/總價值/現金 + 幣別
   $('#wallet-hero-compact').innerHTML=`
     <span class="hc-item"><span class="hc-l">當日</span><span class="hc-v ${_dcls(dc)}">${signMoney(dc,ccy,heroDec)}</span></span>
@@ -1115,8 +1147,7 @@ function renderWallet(){
       <span class="k">${esc(h.symbol)}${h.name&&h.name!==h.symbol?`<span class="k-nm">${esc(h.name)}</span>`:''}</span>
       <span class="sub">${qtyFmt(h.qty)} 股 · 均價 ${money(h.avg_cost,ccy)}</span>
       <span class="mv">市值<br>${h.market_value==null?'—':money(h.market_value,ccy)}</span>
-      <span class="pnl ${dr}">${p==null?'—':signMoney(p,ccy)}<br><span style="font-size:11px">${h.pnl_pct==null?'':a+' '+fmt(Math.abs(h.pnl_pct))+'%'}</span></span>
-      <span class="rpnl ${_dcls(rpl)}" title="已實現損益">${rpl===0?'—':signMoney(rpl,ccy)}</span></div>`;
+      <span class="pnl ${dr}">${p==null?'—':signMoney(p,ccy)}<br><span style="font-size:11px">${h.pnl_pct==null?'':a+' '+fmt(Math.abs(h.pnl_pct))+'%'}</span>${rpl?`<span class="rp-line ${_dcls(rpl)}">已實現 ${signMoney(rpl,ccy)}</span>`:''}</span></div>`;
   }).join('');
   hb.querySelectorAll('.hrow[data-open]').forEach(r=>{r.onclick=()=>openDetail(r.dataset.open,r.dataset.name);keyActivatable(r);});}
   // 錢包資金紀錄 (所選幣別)
@@ -1186,7 +1217,7 @@ function renderWalletCharts(){
   $('#wpnl-title').textContent=`歷史${label}每日交易損益(按市值計)`;
   if(h&&h.dates&&h.dates.length){
     const labels=h.dates.map(x=>x.slice(2));
-    const colors=h.daily_pnl.map(v=>v>=0?upColor():downColor());
+    const uc=upColor(),dc=downColor(),colors=h.daily_pnl.map(v=>v>=0?uc:dc);
     drawStaticChart(pc,{height:180,labels,bars:{values:h.daily_pnl,colors,baseline:'zero'},zeroLine:true,fmtY:fmtVol});
   }else{pc.innerHTML='<div class="chart-msg">尚無資料</div>';}
 }
@@ -1219,7 +1250,7 @@ function hideWalletCross(){
 }
 function initWalletCrosshair(){
   const page=$('#page-wallet');
-  page.addEventListener('mousemove',e=>{
+  page.addEventListener('mousemove',rafThrottle(e=>{
     const ms=STATE.wallet.charts;if(!ms.length){hideWalletCross();return;}   // 無圖表時也清掉滯留 tooltip
     const hov=ms.find(m=>{const r=m.wrap.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;});
     if(!hov){hideWalletCross();return;}
@@ -1229,7 +1260,7 @@ function initWalletCrosshair(){
     i=Math.max(0,Math.min(hov.g.n-1,i));
     ms.forEach(m=>drawCross(m,i));
     showCrossTip(ms,i,e);
-  });
+  }));
   page.addEventListener('mouseleave',hideWalletCross);
 }
 /* 錢包幣別切換 (美金 / 台幣) */
@@ -1512,7 +1543,7 @@ function initSettings(){
     let r;try{r=await api().import_data(secs);}catch(e){r={ok:false,error:String(e)};}
     if(!r.ok){$('#io-status').textContent='匯入:'+(r.error||'失敗');return;}
     $('#io-status').textContent='已匯入:'+((r.applied||[]).join('、')||'(無對應項目)');
-    STATE.watchlists.us=await api().get_watchlist('us');STATE.aicfg=await api().get_ai_config();
+    STATE.watchlists.us=await api().get_watchlist('us');STATE.watchlists.tw=await api().get_watchlist('tw');STATE.aicfg=await api().get_ai_config();
     renderWatchlist();renderSettingsKeys();updateAiRunState();refreshEarnings();
     if(STATE.wallet.data)loadWallet();
     toast('已匯入，App 已更新');
@@ -1554,6 +1585,64 @@ function initSettings(){
       setTimeout(()=> location.reload(), 3000);
     };
   }
+}
+
+const UPD={info:null,last:null,busy:false};
+function fmtBytes(n){if(!n)return'';const mb=n/1048576;return mb>=1?mb.toFixed(1)+' MB':Math.round(n/1024)+' KB';}
+function updKindLabel(k){return k==='installer'?'安裝版':k==='portable'?'可攜版':'原始碼執行';}
+function setUpdBadge(on){const b=$('#nav-upd-badge');if(b)b.hidden=!on;}
+function renderUpdate(){
+  const r=UPD.last,st=$('#upd-status'),inst=$('#upd-install'),pg=$('#upd-page'),notes=$('#upd-notes');
+  if(UPD.info){$('#upd-cur').textContent='v'+UPD.info.version;$('#upd-kind').textContent=updKindLabel(UPD.info.install_kind);}
+  inst.hidden=true;pg.hidden=true;notes.hidden=true;
+  if(!r){st.textContent='尚未檢查';return;}
+  if(!r.ok){st.textContent='檢查失敗:'+(r.error||'無法連線至 GitHub');st.className='upd-status err';return;}
+  st.className='upd-status';
+  if(!r.newer){st.textContent=`已是最新版本(最新 v${r.latest})`;return;}
+  st.className='upd-status new';
+  st.textContent=`有新版本 v${r.latest}`+(r.published_at?` · 發布於 ${r.published_at.slice(0,10)}`:'')+(r.asset_size?` · ${fmtBytes(r.asset_size)}`:'');
+  if(r.notes){notes.textContent=r.notes;notes.hidden=false;}
+  if(r.can_install){inst.hidden=false;inst.disabled=UPD.busy;}
+  else pg.hidden=false;
+}
+async function checkUpdate(force,silent){
+  const btn=$('#upd-check');
+  if(!silent){btn.disabled=true;$('#upd-status').textContent='檢查中…';}
+  let r;try{r=await api().check_update(!!force);}catch(e){r={ok:false,error:String(e)};}
+  UPD.last=r;btn.disabled=false;
+  try{localStorage.setItem('updLastCheck',new Date().toISOString().slice(0,10));}catch(e){}
+  setUpdBadge(!!(r&&r.ok&&r.newer));
+  renderUpdate();
+  if(silent&&r&&r.ok&&r.newer){
+    let seen=null;try{seen=localStorage.getItem('updNotified');}catch(e){}
+    if(seen!==r.latest){toast(`有新版本 v${r.latest} · 到「設定」一鍵更新`);try{localStorage.setItem('updNotified',r.latest);}catch(e){}}
+  }
+}
+window.onUpdateProgress=function(s){
+  const bar=$('#upd-bar'),box=$('#upd-progress'),st=$('#upd-status');
+  if(!s)return;
+  if(s.phase==='download'){box.hidden=false;bar.style.width=(s.pct||0)+'%';st.textContent=`下載中… ${s.pct||0}%`;}
+  else if(s.phase==='install'){bar.style.width='100%';st.textContent='驗證完成,正在啟動安裝程式。App 將自動關閉,安裝後會重新開啟。';}
+  else if(s.phase==='error'){UPD.busy=false;box.hidden=true;st.className='upd-status err';st.textContent='更新失敗:'+(s.error||'未知錯誤');$('#upd-install').disabled=false;}
+};
+async function initUpdater(){
+  const auto=$('#upd-auto');
+  let on=true;try{on=localStorage.getItem('updAuto')!=='0';}catch(e){}
+  auto.checked=on;
+  auto.onchange=()=>{try{localStorage.setItem('updAuto',auto.checked?'1':'0');}catch(e){}};
+  $('#upd-check').onclick=()=>checkUpdate(true,false);
+  $('#upd-page').onclick=()=>api().open_release_page(UPD.last&&UPD.last.html_url);
+  $('#upd-install').onclick=async()=>{
+    if(UPD.busy)return;
+    UPD.busy=true;$('#upd-install').disabled=true;$('#upd-status').textContent='準備下載…';
+    let r;try{r=await api().start_update();}catch(e){r={ok:false,error:String(e)};}
+    if(!r.ok)window.onUpdateProgress({phase:'error',error:r.error});
+  };
+  try{UPD.info=await api().get_app_info();}catch(e){UPD.info=null;}
+  renderUpdate();
+  let last=null;try{last=localStorage.getItem('updLastCheck');}catch(e){}
+  const today=new Date().toISOString().slice(0,10);
+  if(on&&last!==today)setTimeout(()=>checkUpdate(false,true),4000);
 }
 
 /* ---------- AI 分析 ---------- */
@@ -1621,6 +1710,7 @@ function showPage(id){
   $('#pg-title').textContent=PAGE_META[id].t;$('#pg-desc').textContent=PAGE_META[id].d;
   window.scrollTo?.(0,0);$('.main')?.scrollTo?.(0,0);
   if(id!=='wallet'){const b=$('#wallet-hero-compact');if(b)b.classList.remove('show');}   // 離開錢包頁不殘留摘要列
+  renderQuoteViews();
   if(id==='wallet')loadWallet();
   else if(id==='settings')loadSettings();
 }
@@ -1652,13 +1742,17 @@ window.onQuotesPush=async function(){
   snapshotPrices();
   let q;try{q=await api().get_quotes_cached();}catch(e){q=null;}
   if(q)STATE.quotes=q;
-  renderIndices();renderWatchlist();renderGoldPrices();renderAlerts();flashTicks();
-  if(STATE.page==='detail'&&STATE.detail.sym)renderDetail();
-  if(STATE.page==='wallet'&&!STATE.wallet.loading)loadWallet();
+  checkAlerts();renderQuoteViews();flashTicks();
+  if(STATE.page==='detail'&&STATE.detail.sym)renderDetailHeader();
+  if(STATE.page==='wallet')refreshWalletHoldings();
   const t=new Date();
   $('#updated').innerHTML=`延遲報價 · 更新<br>${t.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
   _refreshDone();
 };
+function renderQuoteViews(){
+  if(STATE.page==='dashboard'){renderIndices();renderWatchlist();}
+  else if(STATE.page==='gold'){renderGoldPrices();renderAlerts();}
+}
 let _refreshPending=false,_refreshSafety=null;
 function _refreshDone(){_refreshPending=false;clearTimeout(_refreshSafety);const icon=$('#ricon');if(icon)icon.classList.remove('spin');$('#refresh').disabled=false;}
 // 首次載入:把當前標的交給背景刷新器(集合由空→有值即觸發第一輪抓取+推送)。
@@ -1789,7 +1883,7 @@ function boot(){
   initUpDown();
   initSidebar();
   initMarketSwitch();
-  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();initPerfMode();
+  initNav();initSearch();initAlertForm();initDetail();initCrosshair();initWalletCrosshair();initAi();initWalletForm();initCustomEventsForm();initSettings();initWatchlistView();initPalette();initPerfMode();initUpdater();
   document.querySelectorAll('select').forEach(createCustomSelect);
   $('#refresh').onclick=refreshAll;
   document.addEventListener('click',e=>{
